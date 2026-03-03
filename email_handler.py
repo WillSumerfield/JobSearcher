@@ -254,18 +254,18 @@ def _fetch_fun_block() -> str:
 
         listdle_card = (
             '<td style="width:44%;padding-left:10px;vertical-align:top;">'
-            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
+            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;text-align:center;">'
             '<p style="margin:0 0 14px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
-            "Today&#39;s puzzle &#x1F9E9;"
+            "Today&#39;s Puzzle &#x1F9E9;"
             "</p>"
             f'<a href="{game_url}" '
-            'style="display:inline-flex;align-items:center;gap:16px;'
-            'background:#FFE4ED;color:#8A2040;text-decoration:none;'
-            'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;">'
-            '<img src="https://listdle.com/favicon.ico" alt="" width="26" height="26" '
-            'style="border-radius:4px;flex-shrink:0;" />'
-            f"{game_title} &#8594;"
+            'style="display:inline-block;background:#FFE4ED;color:#8A2040;text-decoration:none;'
+            'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;'
+            'line-height:1;">'
+            '<img src="https://listdle.com/favicon.ico" alt="" width="30" height="30" '
+            'style="border-radius:4px;vertical-align:middle;margin-right:14px;" />'
+            f'<span style="vertical-align:middle;">{game_title} &#8594;</span>'
             "</a>"
         )
         if game_desc:
