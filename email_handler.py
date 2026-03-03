@@ -195,7 +195,7 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
-    msg["Reply-To"] = recipient  # replies go back to the user (and land in bot inbox)
+    # No Reply-To header: replies go to From (the bot), landing in its inbox for the daemon.
     msg.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
     msg.attach(MIMEText(_build_html(jobs_to_send, date_str), "html", "utf-8"))
 
