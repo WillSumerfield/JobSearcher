@@ -46,6 +46,21 @@ IDLE_TIMEOUT = 280
 
 
 # ---------------------------------------------------------------------------
+# Date formatting
+# ---------------------------------------------------------------------------
+
+def _ordinal_suffix(n: int) -> str:
+    """Return the ordinal suffix for an integer (1→'st', 2→'nd', 3→'rd', else 'th')."""
+    return "th" if 11 <= n <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def _format_date_written(dt: date) -> str:
+    """Format a date as e.g. 'Tuesday, 3rd March 2026'."""
+    suffix = _ordinal_suffix(dt.day)
+    return f"{dt.strftime('%A')}, {dt.day}{suffix} {dt.strftime('%B %Y')}"
+
+
+# ---------------------------------------------------------------------------
 # Credential helpers
 # ---------------------------------------------------------------------------
 
@@ -184,7 +199,7 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
         date_str:     Date string for the subject line; defaults to today.
     """
     if date_str is None:
-        date_str = date.today().strftime("%Y-%m-%d")
+        date_str = _format_date_written(date.today())
 
     sender, password = _sender_creds()
     recipient = _recipient()
@@ -205,20 +220,31 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     logger.info("Digest sent.")
 
 
-def send_attachments(cfg: dict, file_paths: list[Path], job_title: str, company: str) -> None:
+def send_attachments(
+    cfg: dict,
+    file_paths: list[Path],
+    job_title: str,
+    company: str,
+    in_reply_to: str = "",
+    references: str = "",
+    thread_subject: str = "",
+) -> None:
     """
     Send tailored .docx files FROM the bot account TO the user's personal address.
 
     Args:
-        cfg:        Parsed profile.yaml.
-        file_paths: List of Paths pointing to the .docx files.
-        job_title:  For the email subject line.
-        company:    For the email subject line.
+        cfg:            Parsed profile.yaml.
+        file_paths:     List of Paths pointing to the .docx files.
+        job_title:      For the email subject line (used when no thread_subject).
+        company:        For the email subject line (used when no thread_subject).
+        in_reply_to:    Message-ID of the message being replied to (for threading).
+        references:     Space-separated chain of ancestor Message-IDs (for threading).
+        thread_subject: Subject of the thread to continue (e.g. "Re: JobSearcher Digest…").
     """
     sender, password = _sender_creds()
     recipient = _recipient()
 
-    subject = f"JobSearcher — Documents for {job_title} @ {company}"
+    subject = thread_subject or f"JobSearcher — Documents for {job_title} @ {company}"
     body = (
         f"Here are your tailored documents for:\n\n"
         f"  Role:    {job_title}\n"
@@ -230,6 +256,10 @@ def send_attachments(cfg: dict, file_paths: list[Path], job_title: str, company:
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     for path in file_paths:
@@ -362,6 +392,13 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
                          sender_addr, subject)
             continue
 
+        # Extract thread headers so the attachment reply appears in the same thread.
+        parsed_msg = email_lib.message_from_bytes(raw)
+        reply_msg_id = parsed_msg.get("Message-ID", "").strip()
+        reply_in_reply_to = parsed_msg.get("In-Reply-To", "").strip()
+        # References chain: original digest id + this reply's id
+        reply_references = " ".join(filter(None, [reply_in_reply_to, reply_msg_id]))
+
         body = _extract_body(raw)
         indices = _parse_indices(body)
 
@@ -406,6 +443,9 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
                 attachment_paths,
                 job_title="Multiple roles" if multi else last_job["title"],
                 company="See attachments" if multi else last_job["company"],
+                in_reply_to=reply_msg_id,
+                references=reply_references,
+                thread_subject=subject,
             )
 
         if errors:

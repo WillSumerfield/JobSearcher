@@ -106,7 +106,7 @@ def cmd_scrape(limit: int | None) -> None:
     # Send email digest
     try:
         console.print("[dim]Sending digest email…[/]")
-        send_digest(cfg, scored, today)
+        send_digest(cfg, scored)
         console.print("[bold green]Digest email sent.[/]")
     except KeyError as exc:
         console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")

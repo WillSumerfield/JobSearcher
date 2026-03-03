@@ -62,8 +62,10 @@ def adapt_for_job(job_dict: dict, cfg: dict) -> tuple[Path, Path]:
     out_dir = _output_dir(job_dict)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    resume_path = out_dir / "resume.docx"
-    cover_path = out_dir / "cover_letter.docx"
+    title_slug = _safe_name(job_dict.get("title", "Role"))
+    company_slug = _safe_name(job_dict.get("company", "Company"))
+    resume_path = out_dir / f"Resume_{title_slug}_{company_slug}.docx"
+    cover_path = out_dir / f"Cover_Letter_{title_slug}_{company_slug}.docx"
 
     logger.info(
         "Tailoring documents for: %s @ %s",
