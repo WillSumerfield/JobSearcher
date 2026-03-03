@@ -1,20 +1,22 @@
 """
 email_handler.py — Gmail SMTP digest sender + IMAP IDLE reply daemon.
 
-Sending:
-    send_digest(cfg, scored_jobs, date_str)
-        Formats a clean HTML email with the ranked job list and sends it
-        from the user's Gmail to themselves.
+Two separate Gmail accounts are used:
+  Sender  (GMAIL_SENDER_ADDRESS / GMAIL_SENDER_APP_PASSWORD)
+      A dedicated bot account.  Sends the digest and all document emails.
+      The daemon logs into this account's IMAP inbox to watch for replies.
 
-Receiving (daemon):
-    start_daemon(cfg, db)
-        Opens an IMAP IDLE connection to Gmail, watches for replies to the
-        digest email, parses the user's chosen indices, calls adaptor.py
-        for each, and emails the resulting .docx files back as attachments.
+  Recipient (GMAIL_RECIPIENT_ADDRESS)
+      The user's personal address.  Receives the digest and replies to it.
+
+Flow:
+  1. send_digest()  →  bot sends digest TO user
+  2. User replies   →  reply lands in bot's inbox (To: is bot address)
+  3. start_daemon() →  bot's IMAP watches for messages FROM user,
+                       calls adaptor, sends .docx files back TO user
 """
 
 import email as email_lib
-import imaplib
 import logging
 import os
 import re
@@ -38,8 +40,22 @@ IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
 DIGEST_SUBJECT_PREFIX = "JobSearcher Digest"
-# Max time (seconds) to sit in IDLE before re-issuing to keep the connection alive
-IDLE_TIMEOUT = 280  # Gmail drops IDLE after ~5 min; renew at ~4:40
+# Gmail drops IDLE after ~5 min; renew a little before that
+IDLE_TIMEOUT = 280
+
+
+# ---------------------------------------------------------------------------
+# Credential helpers
+# ---------------------------------------------------------------------------
+
+def _sender_creds() -> tuple[str, str]:
+    """Return (sender_address, app_password) for the bot account."""
+    return os.environ["GMAIL_SENDER_ADDRESS"], os.environ["GMAIL_SENDER_APP_PASSWORD"]
+
+
+def _recipient() -> str:
+    """Return the user's personal address that receives the digest."""
+    return os.environ["GMAIL_RECIPIENT_ADDRESS"]
 
 
 # ---------------------------------------------------------------------------
@@ -97,9 +113,6 @@ _HTML_FOOTER = """\
 </body></html>
 """
 
-_PLAIN_HEADER = "JobSearcher Digest — {date}\n{'='*40}\n\nReply with numbers to apply, e.g: 1, 3, 7\n\n"
-_PLAIN_ROW = "{idx:>3}.  {title} @ {company}\n     {location} | {salary} | Score: {score}\n     {url}\n\n"
-
 
 def _build_html(scored_jobs: list[ScoredJob], date_str: str) -> str:
     rows = []
@@ -147,13 +160,22 @@ def _esc(text: str) -> str:
             .replace('"', "&quot;"))
 
 
+def _smtp_send(sender: str, password: str, to: str, msg) -> None:
+    """Open a TLS SMTP connection and send one message."""
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.login(sender, password)
+        smtp.sendmail(sender, to, msg.as_bytes())
+
+
 # ---------------------------------------------------------------------------
 # SMTP sending
 # ---------------------------------------------------------------------------
 
 def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = None) -> None:
     """
-    Send the job digest email from the user's Gmail to themselves.
+    Send the job digest FROM the bot account TO the user's personal address.
 
     Args:
         cfg:          Parsed profile.yaml.
@@ -163,41 +185,37 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     if date_str is None:
         date_str = date.today().strftime("%Y-%m-%d")
 
-    gmail_address = os.environ["GMAIL_ADDRESS"]
-    gmail_password = os.environ["GMAIL_APP_PASSWORD"]
+    sender, password = _sender_creds()
+    recipient = _recipient()
     send_top_n = cfg.get("digest_email", {}).get("send_top_n", 15)
-
     jobs_to_send = scored_jobs[:send_top_n]
     subject = f"{DIGEST_SUBJECT_PREFIX} — {date_str}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = gmail_address
-    msg["To"] = gmail_address
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Reply-To"] = recipient  # replies go back to the user (and land in bot inbox)
     msg.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
     msg.attach(MIMEText(_build_html(jobs_to_send, date_str), "html", "utf-8"))
 
-    logger.info("Sending digest: %d jobs, subject='%s'", len(jobs_to_send), subject)
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(gmail_address, gmail_password)
-        smtp.sendmail(gmail_address, gmail_address, msg.as_bytes())
+    logger.info("Sending digest: %d jobs → %s", len(jobs_to_send), recipient)
+    _smtp_send(sender, password, recipient, msg)
     logger.info("Digest sent.")
 
 
 def send_attachments(cfg: dict, file_paths: list[Path], job_title: str, company: str) -> None:
     """
-    Send tailored resume and cover letter .docx files back to the user.
+    Send tailored .docx files FROM the bot account TO the user's personal address.
 
     Args:
         cfg:        Parsed profile.yaml.
-        file_paths: List of Path objects pointing to the .docx files.
+        file_paths: List of Paths pointing to the .docx files.
         job_title:  For the email subject line.
         company:    For the email subject line.
     """
-    gmail_address = os.environ["GMAIL_ADDRESS"]
-    gmail_password = os.environ["GMAIL_APP_PASSWORD"]
+    sender, password = _sender_creds()
+    recipient = _recipient()
 
     subject = f"JobSearcher — Documents for {job_title} @ {company}"
     body = (
@@ -209,8 +227,8 @@ def send_attachments(cfg: dict, file_paths: list[Path], job_title: str, company:
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
-    msg["From"] = gmail_address
-    msg["To"] = gmail_address
+    msg["From"] = sender
+    msg["To"] = recipient
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     for path in file_paths:
@@ -221,11 +239,7 @@ def send_attachments(cfg: dict, file_paths: list[Path], job_title: str, company:
 
     logger.info("Sending attachments for '%s @ %s': %s", job_title, company,
                 [p.name for p in file_paths])
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(gmail_address, gmail_password)
-        smtp.sendmail(gmail_address, gmail_address, msg.as_bytes())
+    _smtp_send(sender, password, recipient, msg)
     logger.info("Attachments sent.")
 
 
@@ -237,23 +251,20 @@ def _parse_indices(body: str) -> list[int]:
     """
     Extract 1-based job indices from the user's reply body.
 
-    Strips quoted lines ("> ...") and the original email footer before
-    searching for numbers, so "1, 3, 7" or "1 3 7" or "1\n3\n7" all work.
+    Strips quoted lines ("> ...") and "On ... wrote:" markers before
+    searching, so "1, 3, 7" or "1 3 7" or "1\\n3\\n7" all work.
     """
-    # Strip quoted reply lines
     clean_lines = []
     for line in body.splitlines():
         stripped = line.strip()
         if stripped.startswith(">"):
             continue
-        # Stop at "On ... wrote:" markers (Gmail/Outlook quoting)
         if re.match(r"^On .+ wrote:$", stripped):
             break
         clean_lines.append(stripped)
 
     clean = " ".join(clean_lines)
     numbers = re.findall(r"\b(\d+)\b", clean)
-    # Deduplicate while preserving order; clamp to reasonable range
     seen: set[int] = set()
     result: list[int] = []
     for n in numbers:
@@ -264,13 +275,19 @@ def _parse_indices(body: str) -> list[int]:
     return result
 
 
-def _is_digest_reply(subject: str, sender: str, our_address: str) -> bool:
-    """Return True if this message looks like a user reply to a digest email."""
+def _is_digest_reply(subject: str, sender_addr: str, expected_sender: str) -> bool:
+    """
+    Return True if this message looks like the user's reply to a digest email.
+
+    Checks:
+      - Subject contains "Re:" and the digest subject prefix
+      - Message is FROM the user's personal address (not spam / other mail)
+    """
     subj_lower = subject.lower()
-    is_reply = "re:" in subj_lower or "re " in subj_lower
+    is_reply = "re:" in subj_lower
     is_digest = DIGEST_SUBJECT_PREFIX.lower() in subj_lower
-    is_from_us = sender.lower().strip("<> ") == our_address.lower()
-    return is_reply and is_digest and is_from_us
+    is_from_user = sender_addr.lower().strip("<> ") == expected_sender.lower()
+    return is_reply and is_digest and is_from_user
 
 
 def _extract_body(raw_message: bytes) -> str:
@@ -295,12 +312,12 @@ def _extract_body(raw_message: bytes) -> str:
 
 def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
     """
-    Fetch any unseen replies to digest emails, parse indices, and dispatch.
-    Called immediately on connect and after each IDLE notification.
+    Inspect unseen messages in the bot's inbox.
+    Skips anything not from the user; processes digest replies.
     """
     from adaptor import adapt_for_job
 
-    gmail_address = os.environ["GMAIL_ADDRESS"]
+    recipient = _recipient()  # we expect replies FROM this address
     uids = client.search(["UNSEEN"])
     if not uids:
         return
@@ -315,29 +332,33 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
             continue
 
         subject = (envelope.subject or b"").decode("utf-8", errors="replace")
-        # sender is a list of Address objects
         sender_list = envelope.from_ or []
         if not sender_list:
             continue
-        sender_addr = f"{(sender_list[0].mailbox or b'').decode()}@{(sender_list[0].host or b'').decode()}"
+        sender_addr = (
+            f"{(sender_list[0].mailbox or b'').decode()}"
+            f"@{(sender_list[0].host or b'').decode()}"
+        )
 
-        if not _is_digest_reply(subject, sender_addr, gmail_address):
-            logger.debug("Skipping non-digest message (subject=%r)", subject)
+        if not _is_digest_reply(subject, sender_addr, recipient):
+            logger.debug("Skipping non-digest message (from=%r, subject=%r)",
+                         sender_addr, subject)
             continue
 
         body = _extract_body(raw)
         indices = _parse_indices(body)
 
         if not indices:
-            logger.warning("Reply contained no valid indices (subject=%r, body snippet=%r)",
-                           subject, body[:100])
+            logger.warning("Reply from user had no valid indices "
+                           "(subject=%r, body snippet=%r)", subject, body[:100])
             client.set_flags([uid], [b"\\Seen"])
             continue
 
-        logger.info("Reply detected: indices=%s", indices)
+        logger.info("Digest reply: indices=%s from %s", indices, sender_addr)
 
         attachment_paths: list[Path] = []
         errors: list[str] = []
+        last_job: dict | None = None
 
         for idx in indices:
             job_dict = db.get_digest_job(idx)
@@ -346,6 +367,7 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
                 logger.warning("Index %d not found in digest.", idx)
                 continue
 
+            last_job = job_dict
             try:
                 resume_path, cover_path = adapt_for_job(job_dict, cfg)
                 attachment_paths.extend([resume_path, cover_path])
@@ -360,23 +382,25 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
                 errors.append(f"Index {idx}: unexpected error — {exc}")
                 logger.exception("adaptor failed for index %d", idx)
 
-        # Send back whatever we have (files + any error notes)
-        if attachment_paths:
-            send_attachments(cfg, attachment_paths,
-                             job_title="Multiple roles" if len(indices) > 1 else job_dict["title"],
-                             company="See attachments" if len(indices) > 1 else job_dict["company"])
+        if attachment_paths and last_job is not None:
+            multi = len(indices) > 1
+            send_attachments(
+                cfg,
+                attachment_paths,
+                job_title="Multiple roles" if multi else last_job["title"],
+                company="See attachments" if multi else last_job["company"],
+            )
 
         if errors:
-            _send_error_reply(cfg, errors)
+            _send_error_note(errors)
 
-        # Mark the reply as seen so we don't process it again
         client.set_flags([uid], [b"\\Seen"])
 
 
-def _send_error_reply(cfg: dict, errors: list[str]) -> None:
-    """Send a plain-text email reporting processing errors back to the user."""
-    gmail_address = os.environ["GMAIL_ADDRESS"]
-    gmail_password = os.environ["GMAIL_APP_PASSWORD"]
+def _send_error_note(errors: list[str]) -> None:
+    """Send a plain-text note FROM the bot TO the user about processing issues."""
+    sender, password = _sender_creds()
+    recipient = _recipient()
 
     body = "JobSearcher encountered the following issues processing your reply:\n\n"
     body += "\n".join(f"  • {e}" for e in errors)
@@ -384,44 +408,36 @@ def _send_error_reply(cfg: dict, errors: list[str]) -> None:
 
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = "JobSearcher — Processing Notes"
-    msg["From"] = gmail_address
-    msg["To"] = gmail_address
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(gmail_address, gmail_password)
-        smtp.sendmail(gmail_address, gmail_address, msg.as_bytes())
+    msg["From"] = sender
+    msg["To"] = recipient
+    _smtp_send(sender, password, recipient, msg)
 
 
 def start_daemon(cfg: dict, db) -> None:
     """
     Start the IMAP IDLE daemon. Runs until KeyboardInterrupt or fatal error.
 
-    Connects to Gmail IMAP, processes any already-pending replies immediately,
-    then enters IDLE mode. On each inbox notification the IDLE loop wakes,
-    processes new messages, and re-enters IDLE.
-
-    Reconnects automatically on transient connection errors.
+    Logs into the bot account's IMAP inbox, processes any pending replies
+    immediately, then enters IDLE. Wakes on each inbox event to check for
+    new messages from the user. Reconnects with exponential backoff on drops.
     """
-    gmail_address = os.environ["GMAIL_ADDRESS"]
-    gmail_password = os.environ["GMAIL_APP_PASSWORD"]
+    sender, password = _sender_creds()
 
-    backoff = 5  # seconds; doubles on each reconnect, capped at 5 minutes
-
-    logger.info("Daemon starting. Watching inbox as %s", gmail_address)
+    backoff = 5
+    logger.info("Daemon starting. Watching bot inbox (%s) for replies from %s",
+                sender, _recipient())
 
     while True:
         try:
             with IMAPClient(IMAP_HOST, port=IMAP_PORT, ssl=True) as client:
-                client.login(gmail_address, gmail_password)
+                client.login(sender, password)
                 client.select_folder("INBOX", readonly=False)
                 logger.info("IMAP connected. Checking for pending replies…")
-                backoff = 5  # reset on successful connect
+                backoff = 5
 
                 _process_new_messages(client, cfg, db)
 
-                logger.info("Entering IDLE loop. Waiting for inbox activity…")
+                logger.info("Entering IDLE loop…")
                 client.idle()
                 idle_start = time.monotonic()
 
@@ -436,7 +452,6 @@ def start_daemon(cfg: dict, db) -> None:
                         client.idle()
                         idle_start = time.monotonic()
                     elif (time.monotonic() - idle_start) >= IDLE_TIMEOUT:
-                        # Re-issue IDLE to keep the connection alive
                         client.idle_done()
                         client.idle()
                         idle_start = time.monotonic()
@@ -445,6 +460,6 @@ def start_daemon(cfg: dict, db) -> None:
             logger.info("Daemon stopped by user.")
             break
         except Exception as exc:  # noqa: BLE001
-            logger.error("IMAP connection error: %s. Reconnecting in %ds…", exc, backoff)
+            logger.error("IMAP error: %s. Reconnecting in %ds…", exc, backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 300)
