@@ -63,25 +63,45 @@ def _salary_display(job) -> str:
 
 
 def cmd_scrape(limit: int | None) -> None:
-    """Run the board scraper and pretty-print results."""
+    """Run the board scraper, apply DB dedup, and pretty-print new results."""
     from scraper.boards import scrape_boards
+    from db import Database
 
     today = date.today().strftime("%Y-%m-%d")
     console.rule(f"[bold]JobSearcher — Scrape Run {today}[/]")
 
     cfg = _load_config()
 
-    console.print("[dim]Scraping Indeed, LinkedIn, Glassdoor…[/]")
-    jobs = scrape_boards(cfg)
+    with Database() as db:
+        purged = db.reset_week()
+        if purged:
+            console.print(f"[dim]Cleared {purged} stale job(s) from seen list (older than 7 days)[/]")
 
-    if not jobs:
-        console.print("\n[bold yellow]No jobs found.[/] Boards may be rate-limiting or no new listings match your filters.")
-        return
+        console.print("[dim]Scraping Indeed, LinkedIn…[/]")
+        scraped = scrape_boards(cfg)
+
+        # Filter to only jobs we haven't shown before
+        new_jobs = [j for j in scraped if not db.is_seen(j.id)]
+        already_seen = len(scraped) - len(new_jobs)
+
+        if not new_jobs:
+            msg = "[bold yellow]No new jobs found.[/]"
+            if already_seen:
+                msg += f" ({already_seen} already seen this week)"
+            else:
+                msg += " Boards may be rate-limiting or no listings match your filters."
+            console.print(f"\n{msg}")
+            return
+
+        # Mark all new jobs as seen and save the digest for later lookup
+        db.mark_seen_bulk(new_jobs)
+        db.save_digest(today, new_jobs)
 
     if limit is not None:
-        jobs = jobs[:limit]
+        new_jobs = new_jobs[:limit]
 
-    console.print(f"\n[bold green]Found {len(jobs)} job(s)[/] (after dedup + filters)\n")
+    seen_note = f"  [dim]({already_seen} already seen this week, hidden)[/]" if already_seen else ""
+    console.print(f"\n[bold green]Found {len(new_jobs)} new job(s)[/]{seen_note}\n")
 
     table = Table(box=box.SIMPLE_HEAD, show_edge=False, highlight=True)
     table.add_column("#", style="dim", width=4, no_wrap=True)
@@ -92,7 +112,7 @@ def cmd_scrape(limit: int | None) -> None:
     table.add_column("Source", min_width=10, no_wrap=True)
     table.add_column("URL", min_width=10, no_wrap=True, style="blue")
 
-    for i, job in enumerate(jobs, start=1):
+    for i, job in enumerate(new_jobs, start=1):
         loc = job.location or "—"
         table.add_row(
             str(i),
