@@ -143,7 +143,7 @@ _HTML_FOOTER = """\
   <!-- Footer -->
   <div style="padding:16px 32px 24px;text-align:center;border-top:1px solid #FFE4ED;">
     <span style="color:#C8A0AC;font-size:12px;">
-      That&rsquo;s your digest for today &mdash; good luck out there! &#10024;
+      Good luck Rach - you've got this &#10024;
       &nbsp;&bull;&nbsp; JobSearcher &bull; {count} new listing(s)
     </span>
   </div>
@@ -171,10 +171,35 @@ def _score_badge(score: float) -> str:
     )
 
 
+def _fetch_listdle_game() -> dict:
+    """
+    Fetch https://listdle.com/games.json, filter out sports games, and return
+    a deterministic game for today (stable within a day, changes each day).
+
+    Falls back to a generic Listdle homepage entry on any error.
+    """
+    fallback = {"title": "Listdle", "url": "https://listdle.com/", "description": ""}
+    try:
+        resp = requests.get(
+            "https://listdle.com/games.json",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; JobSearcher/1.0)"},
+        )
+        resp.raise_for_status()
+        all_games = resp.json()
+        games = [g for g in all_games if g.get("category") != "sports"]
+        if not games:
+            return fallback
+        return games[date.today().toordinal() % len(games)]
+    except Exception:  # noqa: BLE001
+        logger.warning("Listdle games.json fetch failed — using homepage fallback.")
+        return fallback
+
+
 def _fetch_fun_block() -> str:
     """
     Build the daily fun content block: today's bunny from dailybunny.org
-    and a link to the Listdle puzzle.
+    and a date-seeded non-sports puzzle from listdle.com/games.json.
 
     Uses the Squarespace JSON API (?format=json) to get the image URL directly,
     since the site lazy-loads images via JavaScript and static HTML scraping
@@ -216,11 +241,16 @@ def _fetch_fun_block() -> str:
             '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
             '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
-            "Today&#39;s bunny &#x1F407;"
+            "Today&#39;s Runny Babbit &#x1F407;"
             "</p>"
             + media_html
             + "</div></td>"
         )
+
+        game = _fetch_listdle_game()
+        game_title = _esc(game["title"])
+        game_url = _esc(game["url"])
+        game_desc = _esc(game.get("description", ""))
 
         listdle_card = (
             '<td style="width:44%;padding-left:10px;vertical-align:top;">'
@@ -229,16 +259,23 @@ def _fetch_fun_block() -> str:
             'font-size:15px;color:#3D1020;font-weight:normal;">'
             "Today&#39;s puzzle &#x1F9E9;"
             "</p>"
-            '<a href="https://listdle.com/" '
-            'style="display:inline-flex;align-items:center;gap:8px;'
+            f'<a href="{game_url}" '
+            'style="display:inline-flex;align-items:center;gap:16px;'
             'background:#FFE4ED;color:#8A2040;text-decoration:none;'
-            'padding:10px 16px;border-radius:10px;font-weight:600;font-size:14px;">'
-            '<img src="https://listdle.com/favicon.ico" alt="" width="18" height="18" '
-            'style="border-radius:3px;vertical-align:middle;" />'
-            " Play Listdle &#8594;"
+            'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;">'
+            '<img src="https://listdle.com/favicon.ico" alt="" width="26" height="26" '
+            'style="border-radius:4px;flex-shrink:0;" />'
+            f"{game_title} &#8594;"
             "</a>"
-            '<p style="margin:12px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
-            "A new list puzzle every day &mdash; how many can you name?"
+        )
+        if game_desc:
+            listdle_card += (
+                f'<p style="margin:12px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
+                f"{game_desc}</p>"
+            )
+        listdle_card += (
+            '<p style="margin:10px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
+            "Don&#39;t forget to show me what score you get, cutie :3"
             "</p>"
             "</div></td>"
         )
@@ -252,7 +289,7 @@ def _fetch_fun_block() -> str:
         )
 
     except Exception:  # noqa: BLE001
-        logger.debug("Fun content block unavailable — skipping.", exc_info=True)
+        logger.warning("Fun content block unavailable — skipping.", exc_info=True)
         return ""
 
 
