@@ -4,6 +4,7 @@ main.py — JobSearcher entry point
 Usage:
     python main.py --scrape [--limit N]   # Scrape, score, send digest email
     python main.py --daemon               # Start IMAP IDLE reply daemon
+    python main.py --reset-db             # Delete jobs.db and start fresh
 """
 
 import argparse
@@ -75,9 +76,9 @@ def cmd_scrape(limit: int | None) -> None:
     cfg = _load_config()
 
     with Database() as db:
-        purged = db.reset_week()
+        purged = db.expire_seen()
         if purged:
-            console.print(f"[dim]Cleared {purged} stale job(s) from seen list (older than 7 days)[/]")
+            console.print(f"[dim]Aged out {purged} job(s) from seen list (older than 7 days)[/]")
 
         console.print("[dim]Scraping Indeed, LinkedIn…[/]")
         scraped = scrape_boards(cfg)
@@ -99,9 +100,22 @@ def cmd_scrape(limit: int | None) -> None:
         console.print("[dim]Scoring…[/]")
         scored = score_jobs(new_jobs, cfg)
 
-        # Persist: mark seen + save digest (uses full scored list for index lookup)
-        db.mark_seen_bulk(new_jobs)
+        # Only mark seen: jobs sent in the email + below-threshold junk.
+        # Good jobs that didn't fit in the digest are left unmarked so they
+        # reappear in the next run rather than being silently dropped.
+        send_top_n = cfg.get("digest_email", {}).get("send_top_n", 15)
+        sent_jobs  = [sj.job for sj in scored[:send_top_n]]
+        junk_jobs  = [sj.job for sj in scored if sj.score == 0]
+        held_over  = [sj for sj in scored[send_top_n:] if sj.score > 0]
+
+        db.mark_seen_bulk(sent_jobs + junk_jobs)
         db.save_digest(today, [sj.job for sj in scored])
+
+        if held_over:
+            console.print(
+                f"[dim]{len(held_over)} high-scoring job(s) didn't fit the digest "
+                "and will reappear tomorrow.[/]"
+            )
 
     # Send email digest
     try:
@@ -141,6 +155,31 @@ def cmd_scrape(limit: int | None) -> None:
         )
 
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Reset DB command
+# ---------------------------------------------------------------------------
+
+def cmd_reset_db() -> None:
+    """Delete jobs.db and its WAL sidecars, then recreate an empty schema."""
+    from db import DB_PATH
+
+    sidecars = [DB_PATH, DB_PATH.with_suffix(".db-shm"), DB_PATH.with_suffix(".db-wal")]
+    removed = [p for p in sidecars if p.exists()]
+
+    if not removed:
+        console.print("[dim]Nothing to remove — jobs.db does not exist.[/]")
+    else:
+        for p in removed:
+            p.unlink()
+        console.print(f"[bold green]Database reset.[/] Removed: {', '.join(p.name for p in removed)}")
+
+    # Recreate empty schema immediately so the DB is ready for the next run
+    from db import Database
+    with Database():
+        pass
+    console.print("[dim]Empty jobs.db created.[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +225,7 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--scrape", action="store_true", help="Run the board scraper")
     group.add_argument("--daemon", action="store_true", help="Start the IMAP IDLE daemon")
+    group.add_argument("--reset-db", action="store_true", help="Delete jobs.db and start fresh")
     parser.add_argument(
         "--limit", type=int, default=None, metavar="N",
         help="Cap results at N (useful for quick testing)",
@@ -198,6 +238,10 @@ def main() -> None:
     args = parser.parse_args()
     _configure_logging(args.verbose)
 
+    if args.reset_db:
+        cmd_reset_db()
+        return
+
     if not _check_config():
         sys.exit(1)
 
@@ -205,6 +249,8 @@ def main() -> None:
         cmd_scrape(limit=args.limit)
     elif args.daemon:
         cmd_daemon()
+    elif args.reset_db:
+        cmd_reset_db()
 
 
 if __name__ == "__main__":
