@@ -23,6 +23,7 @@ import re
 import smtplib
 import time
 from datetime import date
+from email.header import decode_header, make_header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -310,6 +311,22 @@ def _extract_body(raw_message: bytes) -> str:
 # IMAP IDLE daemon
 # ---------------------------------------------------------------------------
 
+def _decode_mime_header(raw: bytes | None) -> str:
+    """
+    Decode a MIME-encoded email header (e.g. =?UTF-8?Q?Re:_Subject?=).
+
+    Gmail IMAP ENVELOPE headers arrive as raw bytes that may contain MIME
+    encoded-word sequences.  Decoding them properly turns underscores back
+    into spaces so substring checks work correctly.
+    """
+    if not raw:
+        return ""
+    try:
+        return str(make_header(decode_header(raw.decode("utf-8", errors="replace"))))
+    except Exception:  # noqa: BLE001
+        return raw.decode("utf-8", errors="replace")
+
+
 def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
     """
     Inspect unseen messages in the bot's inbox.
@@ -331,7 +348,7 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
         if not envelope or not raw:
             continue
 
-        subject = (envelope.subject or b"").decode("utf-8", errors="replace")
+        subject = _decode_mime_header(envelope.subject)
         sender_list = envelope.from_ or []
         if not sender_list:
             continue
