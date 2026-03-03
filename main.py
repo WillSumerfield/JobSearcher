@@ -2,8 +2,8 @@
 main.py — JobSearcher entry point
 
 Usage:
-    python main.py --scrape [--limit N]   # Run scraper, print results
-    python main.py --daemon               # Start IMAP IDLE daemon (not yet implemented)
+    python main.py --scrape [--limit N]   # Scrape, score, send digest email
+    python main.py --daemon               # Start IMAP IDLE reply daemon
 """
 
 import argparse
@@ -63,9 +63,11 @@ def _salary_display(job) -> str:
 
 
 def cmd_scrape(limit: int | None) -> None:
-    """Run the board scraper, apply DB dedup, and pretty-print new results."""
+    """Scrape boards, dedup, score, print results, and send the digest email."""
     from scraper.boards import scrape_boards
     from db import Database
+    from scorer import score_jobs
+    from email_handler import send_digest
 
     today = date.today().strftime("%Y-%m-%d")
     console.rule(f"[bold]JobSearcher — Scrape Run {today}[/]")
@@ -93,15 +95,28 @@ def cmd_scrape(limit: int | None) -> None:
             console.print(f"\n{msg}")
             return
 
-        # Mark all new jobs as seen and save the digest for later lookup
+        # Score and rank
+        console.print("[dim]Scoring…[/]")
+        scored = score_jobs(new_jobs, cfg)
+
+        # Persist: mark seen + save digest (uses full scored list for index lookup)
         db.mark_seen_bulk(new_jobs)
-        db.save_digest(today, new_jobs)
+        db.save_digest(today, [sj.job for sj in scored])
 
-    if limit is not None:
-        new_jobs = new_jobs[:limit]
+    # Send email digest
+    try:
+        console.print("[dim]Sending digest email…[/]")
+        send_digest(cfg, scored, today)
+        console.print("[bold green]Digest email sent.[/]")
+    except KeyError as exc:
+        console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]Email not sent:[/] {exc}")
 
+    # Print to terminal (capped at --limit if provided)
+    display = scored[:limit] if limit is not None else scored
     seen_note = f"  [dim]({already_seen} already seen this week, hidden)[/]" if already_seen else ""
-    console.print(f"\n[bold green]Found {len(new_jobs)} new job(s)[/]{seen_note}\n")
+    console.print(f"\n[bold green]Found {len(scored)} new job(s)[/]{seen_note}\n")
 
     table = Table(box=box.SIMPLE_HEAD, show_edge=False, highlight=True)
     table.add_column("#", style="dim", width=4, no_wrap=True)
@@ -109,33 +124,40 @@ def cmd_scrape(limit: int | None) -> None:
     table.add_column("Company", min_width=16, max_width=22, no_wrap=True)
     table.add_column("Location", min_width=10, max_width=18, no_wrap=True)
     table.add_column("Salary", min_width=14, max_width=20, no_wrap=True)
+    table.add_column("Score", width=7, no_wrap=True)
     table.add_column("Source", min_width=10, no_wrap=True)
-    table.add_column("URL", min_width=10, no_wrap=True, style="blue")
 
-    for i, job in enumerate(new_jobs, start=1):
-        loc = job.location or "—"
+    for i, sj in enumerate(display, start=1):
+        loc = sj.job.location or "—"
+        score_disp = f"{sj.score:.1f}" if sj.score else "—"
         table.add_row(
             str(i),
-            job.title,
-            job.company,
+            sj.job.title,
+            sj.job.company,
             loc,
-            _salary_display(job),
-            job.source.capitalize(),
-            job.url,
+            _salary_display(sj.job),
+            score_disp,
+            sj.job.source.capitalize(),
         )
 
     console.print(table)
 
 
 # ---------------------------------------------------------------------------
-# Daemon command (stub)
+# Daemon command
 # ---------------------------------------------------------------------------
 
 def cmd_daemon() -> None:
-    console.print(
-        "[bold yellow]--daemon mode is not yet implemented.[/]\n"
-        "This will start the IMAP IDLE inbox watcher in a later step."
-    )
+    """Start the IMAP IDLE inbox watcher."""
+    from db import Database
+    from email_handler import start_daemon
+
+    cfg = _load_config()
+    console.print("[bold]JobSearcher Daemon[/] — watching inbox for digest replies…")
+    console.print("[dim]Press Ctrl+C to stop.[/]\n")
+
+    with Database() as db:
+        start_daemon(cfg, db)
 
 
 # ---------------------------------------------------------------------------
