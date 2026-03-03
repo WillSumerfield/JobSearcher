@@ -75,6 +75,13 @@ def cmd_scrape(limit: int | None) -> None:
 
     cfg = _load_config()
 
+    # --limit caps the whole pipeline, not just the display, so testing is fast.
+    if limit is not None:
+        import copy
+        cfg = copy.deepcopy(cfg)
+        cfg.setdefault("search", {})["results_per_board"] = max(5, limit)
+        console.print(f"[dim]--limit {limit}: results_per_board reduced to {max(5, limit)}[/]")
+
     with Database() as db:
         purged = db.expire_seen()
         if purged:
@@ -86,6 +93,10 @@ def cmd_scrape(limit: int | None) -> None:
         # Filter to only jobs we haven't shown before
         new_jobs = [j for j in scraped if not db.is_seen(j.id)]
         already_seen = len(scraped) - len(new_jobs)
+
+        # Cap new_jobs before scoring so Claude sees at most `limit` entries
+        if limit is not None:
+            new_jobs = new_jobs[:limit]
 
         if not new_jobs:
             msg = "[bold yellow]No new jobs found.[/]"
@@ -127,8 +138,7 @@ def cmd_scrape(limit: int | None) -> None:
     except Exception as exc:  # noqa: BLE001
         console.print(f"[yellow]Email not sent:[/] {exc}")
 
-    # Print to terminal (capped at --limit if provided)
-    display = scored[:limit] if limit is not None else scored
+    # Print to terminal
     seen_note = f"  [dim]({already_seen} already seen this week, hidden)[/]" if already_seen else ""
     console.print(f"\n[bold green]Found {len(scored)} new job(s)[/]{seen_note}\n")
 
@@ -141,7 +151,7 @@ def cmd_scrape(limit: int | None) -> None:
     table.add_column("Score", width=7, no_wrap=True)
     table.add_column("Source", min_width=10, no_wrap=True)
 
-    for i, sj in enumerate(display, start=1):
+    for i, sj in enumerate(scored, start=1):
         loc = sj.job.location or "—"
         score_disp = f"{sj.score:.1f}" if sj.score else "—"
         table.add_row(
