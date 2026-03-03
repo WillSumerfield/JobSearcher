@@ -1,0 +1,10 @@
+python-jobspy>=1.1.0
+requests
+beautifulsoup4
+anthropic
+python-docx
+imapclient
+pyyaml
+python-dotenv
+rich
+pandas
