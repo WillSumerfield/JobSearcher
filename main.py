@@ -165,12 +165,17 @@ def cmd_daemon() -> None:
 # ---------------------------------------------------------------------------
 
 def _configure_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.WARNING
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(levelname)s  %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    # Silence noisy third-party loggers unless --verbose
+    if not verbose:
+        for noisy in ("JobSpy", "imapclient", "imapclient.imaplib", "httpx",
+                      "httpcore", "anthropic", "urllib3"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def main() -> None:
