@@ -29,6 +29,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import requests
 from imapclient import IMAPClient
 
 from scorer import ScoredJob
@@ -79,62 +80,186 @@ def _recipient() -> str:
 # ---------------------------------------------------------------------------
 
 _HTML_HEADER = """\
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"></head>
-<body style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:900px;margin:auto;padding:16px">
-<h2 style="border-bottom:2px solid #4285f4;padding-bottom:8px">
-  JobSearcher Digest &mdash; {date}
-</h2>
-<p style="color:#555">
-  Reply to this email with the numbers of any roles you want to apply for,
-  separated by commas or spaces &mdash; e.g. <code>1, 3, 7</code>.<br>
-  You&rsquo;ll receive tailored resume and cover letter files as attachments.
-</p>
-<table style="border-collapse:collapse;width:100%;font-size:14px">
-  <thead>
-    <tr style="background:#4285f4;color:#fff;text-align:left">
-      <th style="padding:8px 6px">#</th>
-      <th style="padding:8px 6px">Title</th>
-      <th style="padding:8px 6px">Company</th>
-      <th style="padding:8px 6px">Location</th>
-      <th style="padding:8px 6px">Salary</th>
-      <th style="padding:8px 6px">Score</th>
-      <th style="padding:8px 6px">Notes</th>
-      <th style="padding:8px 6px">Link</th>
-    </tr>
-  </thead>
-  <tbody>
+<!DOCTYPE html><html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:28px 12px;background:#FEF0F5;font-family:'Trebuchet MS',Tahoma,Verdana,sans-serif;">
+<div style="max-width:880px;margin:0 auto;background:#FFFFFF;border-radius:20px;overflow:hidden;box-shadow:0 4px 28px rgba(180,60,90,0.10);">
+
+  <!-- Header band -->
+  <div style="background:#FFE4ED;padding:28px 32px 20px;border-bottom:2px solid #F8C0D0;">
+    <div style="font-family:Georgia,Cambria,'Times New Roman',serif;font-size:24px;font-weight:normal;color:#3D1020;letter-spacing:-0.2px;">
+      &#10022; JobSearcher Digest
+    </div>
+    <div style="margin-top:5px;font-size:15px;color:#AA7888;">{date}</div>
+  </div>
+
+  {intro_block}
+
+  <!-- Instructions -->
+  <div style="padding:18px 32px 14px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">
+    <p style="margin:0;font-size:13.5px;color:#5C2A3A;line-height:1.65;">
+      Spot a role you like? Hit reply with the numbers &mdash; e.g.
+      <span style="background:#FFE4ED;color:#A83050;padding:1px 7px;border-radius:5px;font-family:monospace;font-size:13px;">1, 3, 7</span>
+      &mdash; and I&rsquo;ll get your tailored documents sorted!
+    </p>
+  </div>
+
+  <!-- Table -->
+  <div style="padding:8px 20px 20px;">
+  <table style="border-collapse:collapse;width:100%;font-size:13.5px;margin-top:12px;">
+    <thead>
+      <tr style="background:#F8CAD8;color:#3D1020;text-align:left;">
+        <th style="padding:10px 10px;font-weight:600;">#</th>
+        <th style="padding:10px 10px;font-weight:600;">Title</th>
+        <th style="padding:10px 10px;font-weight:600;">Company</th>
+        <th style="padding:10px 10px;font-weight:600;">Location</th>
+        <th style="padding:10px 10px;font-weight:600;">Salary</th>
+        <th style="padding:10px 10px;font-weight:600;text-align:center;">Fit</th>
+        <th style="padding:10px 10px;font-weight:600;">Notes</th>
+        <th style="padding:10px 10px;font-weight:600;">Link</th>
+      </tr>
+    </thead>
+    <tbody>
 """
 
 _HTML_ROW = """\
-    <tr style="background:{bg}">
-      <td style="padding:7px 6px;font-weight:bold;color:#4285f4">{idx}</td>
-      <td style="padding:7px 6px;font-weight:bold">{title}</td>
-      <td style="padding:7px 6px">{company}</td>
-      <td style="padding:7px 6px;color:#555">{location}</td>
-      <td style="padding:7px 6px;color:#555">{salary}</td>
-      <td style="padding:7px 6px;text-align:center">{score}</td>
-      <td style="padding:7px 6px;font-style:italic;color:#555;font-size:13px">{reason}</td>
-      <td style="padding:7px 6px"><a href="{url}" style="color:#4285f4">View</a></td>
+    <tr style="background:{bg};border-bottom:1px solid #FFE4ED;">
+      <td style="padding:9px 10px;font-weight:700;color:#C4607A;font-size:14px;">{idx}</td>
+      <td style="padding:9px 10px;font-weight:600;color:#3D1020;">{title}</td>
+      <td style="padding:9px 10px;color:#5C2A3A;">{company}</td>
+      <td style="padding:9px 10px;color:#AA7888;font-size:13px;">{location}</td>
+      <td style="padding:9px 10px;color:#AA7888;font-size:13px;">{salary}</td>
+      <td style="padding:9px 10px;text-align:center;">{score_badge}</td>
+      <td style="padding:9px 10px;font-style:italic;color:#AA7888;font-size:12.5px;">{reason}</td>
+      <td style="padding:9px 10px;"><a href="{url}" style="color:#C4607A;text-decoration:none;font-weight:600;font-size:13px;">View &#8594;</a></td>
     </tr>
 """
 
 _HTML_FOOTER = """\
-  </tbody>
-</table>
-<p style="color:#aaa;font-size:12px;margin-top:24px">
-  Sent by JobSearcher &bull; {count} new listing(s) today
-</p>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- Footer -->
+  <div style="padding:16px 32px 24px;text-align:center;border-top:1px solid #FFE4ED;">
+    <span style="color:#C8A0AC;font-size:12px;">
+      That&rsquo;s your digest for today &mdash; good luck out there! &#10024;
+      &nbsp;&bull;&nbsp; JobSearcher &bull; {count} new listing(s)
+    </span>
+  </div>
+
+</div>
 </body></html>
 """
 
 
-def _build_html(scored_jobs: list[ScoredJob], date_str: str) -> str:
+def _score_badge(score: float) -> str:
+    """Return a coloured pill <span> for the score, styled by tier."""
+    if score >= 8:
+        bg, fg = "#B8EED0", "#1B5E38"
+    elif score >= 5:
+        bg, fg = "#FFE8A8", "#6B4700"
+    elif score > 0:
+        bg, fg = "#FFD0D8", "#7A1E2E"
+    else:
+        bg, fg = "#EEEAEA", "#888888"
+    label = f"{score:.1f}" if score else "—"
+    return (
+        f'<span style="display:inline-block;background:{bg};color:{fg};'
+        f'padding:3px 10px;border-radius:99px;font-weight:700;font-size:12px;'
+        f'white-space:nowrap;">{label}</span>'
+    )
+
+
+def _fetch_fun_block() -> str:
+    """
+    Build the daily fun content block: today's bunny from dailybunny.org
+    and a link to the Listdle puzzle.
+
+    Uses the Squarespace JSON API (?format=json) to get the image URL directly,
+    since the site lazy-loads images via JavaScript and static HTML scraping
+    finds nothing.
+
+    Returns an HTML string ready to drop into {intro_block}, or "" on any
+    failure so the digest still sends without it.
+    """
+    try:
+        resp = requests.get(
+            "https://dailybunny.org/?format=json",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; JobSearcher/1.0)"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = data.get("items", [])
+        if not items:
+            logger.warning("dailybunny.org JSON: no items found.")
+            return ""
+
+        post = items[0]
+        img_url = post.get("assetUrl") or post.get("thumbnailUrl")
+
+        if not img_url:
+            logger.warning("dailybunny.org JSON: no image URL in first item.")
+            return ""
+
+        post_title = post.get("title", "")
+        media_html = (
+            f'<a href="https://dailybunny.org/" style="display:block;">'
+            f'<img src="{_esc(img_url)}" alt="{_esc(post_title)}" '
+            f'style="max-width:100%;border-radius:10px;display:block;" /></a>'
+        )
+
+        bunny_card = (
+            '<td style="width:56%;padding-right:10px;vertical-align:top;">'
+            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
+            '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
+            'font-size:15px;color:#3D1020;font-weight:normal;">'
+            "Today&#39;s bunny &#x1F407;"
+            "</p>"
+            + media_html
+            + "</div></td>"
+        )
+
+        listdle_card = (
+            '<td style="width:44%;padding-left:10px;vertical-align:top;">'
+            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
+            '<p style="margin:0 0 14px;font-family:Georgia,Cambria,serif;'
+            'font-size:15px;color:#3D1020;font-weight:normal;">'
+            "Today&#39;s puzzle &#x1F9E9;"
+            "</p>"
+            '<a href="https://listdle.com/" '
+            'style="display:inline-flex;align-items:center;gap:8px;'
+            'background:#FFE4ED;color:#8A2040;text-decoration:none;'
+            'padding:10px 16px;border-radius:10px;font-weight:600;font-size:14px;">'
+            '<img src="https://listdle.com/favicon.ico" alt="" width="18" height="18" '
+            'style="border-radius:3px;vertical-align:middle;" />'
+            " Play Listdle &#8594;"
+            "</a>"
+            '<p style="margin:12px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
+            "A new list puzzle every day &mdash; how many can you name?"
+            "</p>"
+            "</div></td>"
+        )
+
+        return (
+            '<div style="padding:20px 32px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
+            '<table style="width:100%;border-collapse:collapse;"><tr>'
+            + bunny_card
+            + listdle_card
+            + "</tr></table></div>"
+        )
+
+    except Exception:  # noqa: BLE001
+        logger.debug("Fun content block unavailable — skipping.", exc_info=True)
+        return ""
+
+
+def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = "") -> str:
     rows = []
     for i, sj in enumerate(scored_jobs, start=1):
-        bg = "#f9f9f9" if i % 2 == 0 else "#fff"
-        score_disp = f"{sj.score:.1f}" if sj.score else "—"
+        bg = "#FFF5F8" if i % 2 == 0 else "#FFFFFF"
         rows.append(_HTML_ROW.format(
             bg=bg,
             idx=i,
@@ -142,12 +267,12 @@ def _build_html(scored_jobs: list[ScoredJob], date_str: str) -> str:
             company=_esc(sj.job.company),
             location=_esc(sj.job.location or "—"),
             salary=_esc(sj.job.salary_display()),
-            score=score_disp,
+            score_badge=_score_badge(sj.score),
             reason=_esc(sj.reason) if sj.reason else "",
             url=sj.job.url,
         ))
     return (
-        _HTML_HEADER.format(date=date_str)
+        _HTML_HEADER.format(date=date_str, intro_block=intro_block)
         + "".join(rows)
         + _HTML_FOOTER.format(count=len(scored_jobs))
     )
@@ -207,13 +332,15 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     jobs_to_send = scored_jobs[:send_top_n]
     subject = f"{DIGEST_SUBJECT_PREFIX} — {date_str}"
 
+    intro_block = _fetch_fun_block()
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
     # No Reply-To header: replies go to From (the bot), landing in its inbox for the daemon.
     msg.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
-    msg.attach(MIMEText(_build_html(jobs_to_send, date_str), "html", "utf-8"))
+    msg.attach(MIMEText(_build_html(jobs_to_send, date_str, intro_block=intro_block), "html", "utf-8"))
 
     logger.info("Sending digest: %d jobs → %s", len(jobs_to_send), recipient)
     _smtp_send(sender, password, recipient, msg)
