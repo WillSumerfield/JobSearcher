@@ -14,11 +14,12 @@ while the header / contact block is preserved.
 
 import json
 import logging
+import os
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 from docx import Document
 
 logger = logging.getLogger(__name__)
@@ -181,13 +182,14 @@ Return ONLY a valid JSON array (no markdown fences, no extra text):
 If no changes are beneficial, return: []"""
 
     try:
-        client = anthropic.Anthropic()
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
+        _env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", prompt],
+            capture_output=True, text=True, timeout=180, env=_env,
         )
-        raw = message.content[0].text.strip()
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()}")
+        raw = result.stdout.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
@@ -293,13 +295,14 @@ Output ONLY the letter body — plain text, paragraphs separated by blank lines.
 No markdown, no JSON, no explanation."""
 
     try:
-        client = anthropic.Anthropic()
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+        _env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", prompt],
+            capture_output=True, text=True, timeout=180, env=_env,
         )
-        return message.content[0].text.strip()
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()}")
+        return result.stdout.strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Cover letter Claude call failed (%s) — using fallback.", exc)
         return (

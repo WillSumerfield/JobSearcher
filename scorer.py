@@ -16,11 +16,9 @@ Stage 2 — Claude ranking (API call):
 
 import json
 import logging
-import os
 import re
+import subprocess
 from dataclasses import dataclass
-
-import anthropic
 
 from scraper.models import Job
 
@@ -200,22 +198,24 @@ Return ONLY a valid JSON array, no markdown fences, no extra text:
 
 def _claude_rank(jobs: list[Job], cfg: dict) -> dict[int, dict]:
     """
-    Call Claude claude-sonnet-4-6 to score the shortlisted jobs.
+    Call Claude via the CLI to score the shortlisted jobs.
 
     Returns a dict mapping 1-based job index → {score: float, reason: str}.
-    Raises on API or parse errors (caller falls back gracefully).
+    Raises on CLI or parse errors (caller falls back gracefully).
     """
-    client = anthropic.Anthropic()  # picks up ANTHROPIC_API_KEY from env
     prompt = _build_prompt(jobs, cfg)
 
     logger.info("Sending %d jobs to Claude for ranking…", len(jobs))
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    result = subprocess.run(
+        ["claude", "-p", prompt],
+        capture_output=True, text=True, timeout=180, env=env,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()}")
 
-    raw = message.content[0].text.strip()
+    raw = result.stdout.strip()
 
     # Strip accidental markdown fences (```json … ```)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
