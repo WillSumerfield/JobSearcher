@@ -153,31 +153,38 @@ def scrape_boards(cfg: dict) -> list[Job]:
     remote_ok: bool = search_cfg.get("remote_ok", True)
     results_per_board: int = search_cfg.get("results_per_board", 30)
 
-    boards = ["indeed", "linkedin", "glassdoor"]
+    # Glassdoor frequently returns 400 errors; use only stable boards.
+    boards = ["indeed", "linkedin"]
 
     # Collect all raw rows keyed by job_url for deduplication
     seen_urls: dict[str, Job] = {}
     board_errors: list[str] = []
 
-    search_locations = [location]
+    # We run two passes per keyword: one for the configured location and,
+    # if remote_ok, one with remote_only=True (avoids geocoding "Remote").
+    search_passes: list[dict] = [
+        {"location": location, "remote_only": False},
+    ]
     if remote_ok:
-        search_locations.append("Remote")
+        search_passes.append({"location": location, "remote_only": True})
 
     for keyword in keywords:
-        for loc in search_locations:
-            logger.info("Scraping: '%s' in '%s'", keyword, loc)
+        for pass_cfg in search_passes:
+            loc_label = "Remote" if pass_cfg["remote_only"] else pass_cfg["location"]
+            logger.info("Scraping: '%s' in '%s'", keyword, loc_label)
             try:
                 df: pd.DataFrame = jobspy.scrape_jobs(
                     site_name=boards,
                     search_term=keyword,
-                    location=loc,
+                    location=pass_cfg["location"],
+                    remote_only=pass_cfg["remote_only"],
                     results_wanted=results_per_board,
                     hours_old=24,
                     country_indeed="UK",
                     verbose=0,
                 )
             except Exception as exc:  # noqa: BLE001
-                msg = f"Board scrape failed for '{keyword}' @ '{loc}': {exc}"
+                msg = f"Board scrape failed for '{keyword}' @ '{loc_label}': {exc}"
                 logger.warning(msg)
                 board_errors.append(msg)
                 continue

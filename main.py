@@ -25,7 +25,7 @@ from rich import box
 CONFIG_PATH = Path("config/profile.yaml")
 ENV_PATH = Path("config/.env")
 
-console = Console()
+console = Console(width=160)
 
 
 def _check_config() -> bool:
