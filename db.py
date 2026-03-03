@@ -110,10 +110,12 @@ class Database:
                 rows,
             )
 
-    def reset_week(self) -> int:
+    def expire_seen(self) -> int:
         """
-        Delete seen_jobs rows older than 7 days so stale listings can resurface.
-        Returns the number of rows purged.
+        Rolling 7-day window: drop any seen_jobs entry whose seen_at timestamp
+        is more than 7 days old.  Called at the start of every scrape run so
+        listings age out one-by-one as time passes — no batch weekly reset.
+        Returns the number of rows removed.
         """
         cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
         with self._conn:
@@ -122,7 +124,7 @@ class Database:
             )
         purged = cur.rowcount
         if purged:
-            logger.info("reset_week: purged %d stale seen_jobs row(s)", purged)
+            logger.info("expire_seen: removed %d seen_jobs row(s) older than 7 days", purged)
         return purged
 
     # ------------------------------------------------------------------
