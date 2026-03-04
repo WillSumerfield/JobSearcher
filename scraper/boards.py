@@ -174,6 +174,128 @@ def _apply_filters(jobs: list[Job], cfg: dict) -> list[Job]:
 
 
 # ---------------------------------------------------------------------------
+# Welcome to the Jungle (Algolia)
+# ---------------------------------------------------------------------------
+
+_WTTJ_APP_ID = "***REMOVED***"
+_WTTJ_API_KEY = "***REMOVED***"
+_WTTJ_INDEX = "wttj_jobs_production_en"
+_WTTJ_HEADERS = {
+    "X-Algolia-Application-Id": _WTTJ_APP_ID,
+    "X-Algolia-API-Key": _WTTJ_API_KEY,
+    "Content-Type": "application/json",
+    # Algolia validates origin; must match the site's own domain
+    "Origin": "https://www.welcometothejungle.com",
+    "Referer": "https://www.welcometothejungle.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
+_WTTJ_FIELDS = [
+    "name", "slug", "organization", "offices", "summary",
+    "salary_yearly_minimum", "salary_maximum", "salary_currency",
+    "published_at_timestamp", "remote", "contract_type",
+]
+
+
+def _scrape_wttj(cfg: dict) -> list[Job]:
+    """
+    Query the Welcome to the Jungle Algolia index for each keyword in the
+    search config, filtering to UK-based and/or fully-remote jobs.
+
+    Returns a deduplicated list of Job objects (source = 'welcometothejungle').
+    Errors per keyword are logged as warnings; the function never raises.
+    """
+    from datetime import datetime
+
+    search_cfg = cfg.get("search", {})
+    keywords: list[str] = search_cfg.get("keywords", [])
+    results_per_board: int = search_cfg.get("results_per_board", 30)
+    remote_ok: bool = search_cfg.get("remote_ok", True)
+
+    algolia_url = (
+        f"https://{_WTTJ_APP_ID}-dsn.algolia.net/1/indexes/{_WTTJ_INDEX}/query"
+    )
+
+    # Run two passes per keyword: UK offices, and (if remote_ok) fully remote
+    passes: list[str] = ["offices.country_code:GB"]
+    if remote_ok:
+        passes.append("remote:full")
+
+    seen_urls: dict[str, Job] = {}
+
+    for keyword in keywords:
+        for algolia_filter in passes:
+            label = "Remote" if "remote" in algolia_filter else "UK"
+            logger.info("WTTJ: scraping '%s' [%s]", keyword, label)
+            try:
+                resp = requests.post(
+                    algolia_url,
+                    json={
+                        "query": keyword,
+                        "hitsPerPage": results_per_board,
+                        "filters": algolia_filter,
+                        "attributesToRetrieve": _WTTJ_FIELDS,
+                    },
+                    headers=_WTTJ_HEADERS,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("WTTJ: request failed for '%s' [%s]: %s", keyword, label, exc)
+                continue
+
+            for hit in resp.json().get("hits", []):
+                org = hit.get("organization") or {}
+                org_slug = org.get("slug", "")
+                job_slug = hit.get("slug", "")
+                if not org_slug or not job_slug:
+                    continue
+                url = (
+                    f"https://www.welcometothejungle.com/en/companies"
+                    f"/{org_slug}/jobs/{job_slug}"
+                )
+                if url in seen_urls:
+                    continue
+
+                # Location: prefer city from UK offices; note remote status
+                offices = hit.get("offices") or []
+                cities = [o["city"] for o in offices if o.get("city")]
+                location = ", ".join(dict.fromkeys(cities))  # dedup, preserve order
+                remote_status = hit.get("remote") or ""
+                if remote_status == "full":
+                    location = (f"{location} (Remote)" if location else "Remote")
+
+                # Salary (WTTJ stores annual min/max directly)
+                sal_min = hit.get("salary_yearly_minimum")
+                sal_max = hit.get("salary_maximum")
+                currency = (hit.get("salary_currency") or "GBP").upper()
+                # Only use salary if it's GBP; otherwise leave None
+                if currency != "GBP":
+                    sal_min = sal_max = None
+
+                # Date posted
+                ts = hit.get("published_at_timestamp")
+                date_posted = (
+                    datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else None
+                )
+
+                seen_urls[url] = Job(
+                    title=hit.get("name", ""),
+                    company=org.get("name", ""),
+                    location=location,
+                    url=url,
+                    source="welcometothejungle",
+                    description=hit.get("summary") or "",
+                    salary_min=float(sal_min) if sal_min is not None else None,
+                    salary_max=float(sal_max) if sal_max is not None else None,
+                    date_posted=date_posted,
+                )
+
+            logger.info("WTTJ: %d unique jobs so far", len(seen_urls))
+
+    return list(seen_urls.values())
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -261,6 +383,16 @@ def scrape_boards(cfg: dict) -> list[Job]:
             "%d scrape error(s) occurred (boards may have rate-limited).",
             len(board_errors),
         )
+
+    # Merge Welcome to the Jungle results into the same dedup dict
+    wttj_jobs = _scrape_wttj(cfg)
+    wttj_new = 0
+    for job in wttj_jobs:
+        if job.url not in seen_urls:
+            seen_urls[job.url] = job
+            wttj_new += 1
+    if wttj_new:
+        logger.info("WTTJ: added %d new job(s)", wttj_new)
 
     all_jobs = list(seen_urls.values())
     filtered = _apply_filters(all_jobs, cfg)
