@@ -88,7 +88,7 @@ _HTML_HEADER = """\
   <!-- Header band -->
   <div style="background:#FFE4ED;padding:28px 32px 20px;border-bottom:2px solid #F8C0D0;">
     <div style="font-family:Georgia,Cambria,'Times New Roman',serif;font-size:24px;font-weight:normal;color:#3D1020;letter-spacing:-0.2px;">
-      &#10022; JobSearcher Digest
+      &#10022;  Today's Job Matches
     </div>
     <div style="margin-top:5px;font-size:15px;color:#AA7888;">{date}</div>
   </div>
