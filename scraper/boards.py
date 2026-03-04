@@ -9,10 +9,15 @@ Usage:
 
 import logging
 import re
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 from scraper.models import Job
 
@@ -265,3 +270,127 @@ def scrape_boards(cfg: dict) -> list[Job]:
         len(all_jobs), len(filtered),
     )
     return filtered
+
+
+# ---------------------------------------------------------------------------
+# Description enrichment — follow job URLs to fetch full posting text
+# ---------------------------------------------------------------------------
+
+_ENRICH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
+# Tags whose content we strip before extracting body text
+_STRIP_TAGS = {"script", "style", "nav", "header", "footer", "aside", "noscript"}
+
+# Description length below which we bother fetching the full page
+_ENRICH_THRESHOLD = 500
+
+
+def _fetch_full_description(job: Job) -> str | None:
+    """
+    Fetch job.url and return the full description text, or None on failure.
+
+    Tries board-specific CSS selectors first, then falls back to stripping
+    all navigational chrome and returning the remaining body text.
+    """
+    try:
+        resp = requests.get(
+            job.url,
+            timeout=12,
+            headers={"User-Agent": _ENRICH_UA},
+            allow_redirects=True,
+        )
+        if resp.status_code in (403, 429):
+            logger.warning("enrich: %s blocked (%d) for %s", job.url, resp.status_code, job.source)
+            return None
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("enrich: failed to fetch %s — %s", job.url, exc)
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Board-specific selectors (higher quality)
+    selectors: list[str] = []
+    host = urlparse(job.url).netloc.lower()
+    if "linkedin.com" in host:
+        selectors = [
+            "div.description__text",
+            "div[class*='description']",
+            "section[class*='description']",
+        ]
+    elif "indeed.com" in host:
+        selectors = ["div#jobDescriptionText", "div[class*='jobDescription']"]
+
+    for selector in selectors:
+        el = soup.select_one(selector)
+        if el:
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 200:
+                return text
+
+    # Fallback: strip chrome, return body text
+    for tag in soup.find_all(_STRIP_TAGS):
+        tag.decompose()
+    body = soup.find("body")
+    if body:
+        text = body.get_text(separator=" ", strip=True)
+        # Collapse runs of whitespace
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        return text if len(text) > 200 else None
+    return None
+
+
+def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
+    """
+    Fetch full job descriptions in parallel for jobs whose description is
+    shorter than _ENRICH_THRESHOLD characters.  Mutates job.description in place.
+
+    Jobs that already have a long description are skipped.
+    Any fetch failure is logged as a warning; the original description is kept.
+    A polite per-domain delay (0.5 s) is applied to avoid hammering a single host.
+    """
+    to_enrich = [j for j in jobs if len(j.description or "") < _ENRICH_THRESHOLD]
+    if not to_enrich:
+        logger.info("enrich: all descriptions already sufficient — skipping fetch.")
+        return
+
+    logger.info("enrich: fetching full descriptions for %d/%d jobs…", len(to_enrich), len(jobs))
+
+    # Track last-request time per domain for polite throttling
+    domain_last_hit: dict[str, float] = {}
+    domain_lock_map: dict[str, object] = {}
+    import threading
+    global_lock = threading.Lock()
+
+    def _throttled_fetch(job: Job) -> tuple[Job, str | None]:
+        host = urlparse(job.url).netloc.lower()
+        with global_lock:
+            if host not in domain_lock_map:
+                domain_lock_map[host] = threading.Lock()
+        domain_lock = domain_lock_map[host]
+        with domain_lock:
+            now = time.monotonic()
+            gap = now - domain_last_hit.get(host, 0)
+            if gap < 0.5:
+                time.sleep(0.5 - gap)
+            domain_last_hit[host] = time.monotonic()
+        return job, _fetch_full_description(job)
+
+    enriched = skipped = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(_throttled_fetch, job): job for job in to_enrich}
+        for future in as_completed(futures):
+            job, text = future.result()
+            if text and len(text) > len(job.description or ""):
+                job.description = text
+                enriched += 1
+            else:
+                skipped += 1
+
+    logger.info(
+        "enrich: done — %d enriched, %d unchanged (fetch failed or no improvement).",
+        enriched, skipped,
+    )

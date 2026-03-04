@@ -65,7 +65,7 @@ def _salary_display(job) -> str:
 
 def cmd_scrape(limit: int | None) -> None:
     """Scrape boards, dedup, score, print results, and send the digest email."""
-    from scraper.boards import scrape_boards
+    from scraper.boards import scrape_boards, enrich_descriptions
     from db import Database
     from scorer import score_jobs
     from email_handler import send_digest
@@ -106,6 +106,10 @@ def cmd_scrape(limit: int | None) -> None:
                 msg += " Boards may be rate-limiting or no listings match your filters."
             console.print(f"\n{msg}")
             return
+
+        # Enrich descriptions by following job URLs for short/missing descriptions
+        console.print("[dim]Fetching full job descriptions…[/]")
+        enrich_descriptions(new_jobs)
 
         # Score and rank
         console.print("[dim]Scoring…[/]")

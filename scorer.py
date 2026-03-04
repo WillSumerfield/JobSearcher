@@ -153,7 +153,7 @@ def _build_prompt(jobs: list[Job], cfg: dict) -> str:
     job_entries: list[str] = []
     for i, job in enumerate(jobs, start=1):
         # Truncate description to keep the prompt from ballooning
-        desc = (job.description or "").replace("\n", " ").strip()[:400]
+        desc = (job.description or "").replace("\n", " ").strip()[:2000]
         salary = job.salary_display()
         job_entries.append(
             f"{i}. {job.title} @ {job.company} | {job.location} | {salary}\n"
