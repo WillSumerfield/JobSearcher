@@ -66,6 +66,7 @@ def _salary_display(job) -> str:
 def cmd_scrape(limit: int | None) -> None:
     """Scrape boards, dedup, score, print results, and send the digest email."""
     from scraper.boards import scrape_boards, enrich_descriptions
+    from scraper.companies import scrape_all_companies
     from db import Database
     from scorer import score_jobs
     from email_handler import send_digest
@@ -93,6 +94,16 @@ def cmd_scrape(limit: int | None) -> None:
         # Filter to only jobs we haven't shown before
         new_jobs = [j for j in scraped if not db.is_seen(j.id)]
         already_seen = len(scraped) - len(new_jobs)
+
+        # Scrape target company career pages and merge (deduplicated by URL)
+        console.print("[dim]Scraping target company career pages…[/]")
+        company_jobs = scrape_all_companies(cfg)
+        company_new = [j for j in company_jobs if not db.is_seen(j.id)]
+        seen_urls: dict = {j.url: j for j in new_jobs}
+        for j in company_new:
+            if j.url and j.url not in seen_urls:
+                seen_urls[j.url] = j
+        new_jobs = list(seen_urls.values())
 
         # Cap new_jobs before scoring so Claude sees at most `limit` entries
         if limit is not None:
