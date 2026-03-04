@@ -189,9 +189,11 @@ SCORING GUIDE
 JOBS TO SCORE
 {jobs_block}
 
-Return ONLY a valid JSON array, no markdown fences, no extra text:
+Return ONLY a valid JSON array, no markdown fences, no extra text.
+Write each reason in second person, addressing the applicant directly as "you" \
+(e.g. "Great fit for you — your PySpark background…", not "her" or "him").
 [
-  {{"index": 1, "score": 8.5, "reason": "One concise sentence."}},
+  {{"index": 1, "score": 8.5, "reason": "One concise sentence addressed to 'you'."}},
   ...
 ]"""
 
