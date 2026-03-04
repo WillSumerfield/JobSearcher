@@ -263,6 +263,18 @@ def main() -> None:
         "--yes", "-y", action="store_true",
         help="Skip confirmation prompt and write to profile.yaml immediately",
     )
+    parser.add_argument(
+        "--detect-only", "-d", action="store_true",
+        help="Detect ATS and show results without adding to profile.yaml (bypasses already-exists check)",
+    )
+    parser.add_argument(
+        "--ats", default=None,
+        help="Override ATS type instead of auto-detecting (e.g. greenhouse, lever, ashby, smartrecruiters)",
+    )
+    parser.add_argument(
+        "--token", default=None,
+        help="ATS token/slug to use with --ats override (e.g. revolut, palantir)",
+    )
     args = parser.parse_args()
 
     if not CONFIG_PATH.exists():
@@ -270,7 +282,7 @@ def main() -> None:
         sys.exit(1)
 
     cfg = _load_config()
-    if _company_exists(cfg, args.name):
+    if not args.detect_only and _company_exists(cfg, args.name):
         print(f"'{args.name}' is already listed in profile.yaml.")
         sys.exit(0)
 
@@ -278,7 +290,12 @@ def main() -> None:
     print(f"URL: {args.url}")
     print()
 
-    ats, extra_fields = _detect_ats(args.url)
+    if args.ats:
+        ats = args.ats
+        extra_fields = {"ats_token": args.token or ""} if args.token else {}
+        print(f"  (ATS override — skipping auto-detection)")
+    else:
+        ats, extra_fields = _detect_ats(args.url)
     job_count = _test_ats(ats, extra_fields, args.url)
 
     # Display results
@@ -300,6 +317,9 @@ def main() -> None:
             "The token may be incorrect or the company has no open roles right now.\n"
             "  You can manually edit the fields in profile.yaml after adding.\n"
         )
+
+    if args.detect_only:
+        return
 
     if not args.yes:
         try:

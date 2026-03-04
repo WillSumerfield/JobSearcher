@@ -41,7 +41,7 @@ SMTP_PORT = 587
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
-DIGEST_SUBJECT_PREFIX = "JobSearcher Digest"
+DIGEST_SUBJECT_PREFIX = "Today's Job Matches"
 # Gmail drops IDLE after ~5 min; renew a little before that
 IDLE_TIMEOUT = 280
 
@@ -316,7 +316,7 @@ def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = 
 
 
 def _build_plain(scored_jobs: list[ScoredJob], date_str: str) -> str:
-    lines = [f"JobSearcher Digest — {date_str}", "=" * 40, "",
+    lines = [f"Today's Job Matches — {date_str}", "=" * 40, "",
              "Reply with numbers to apply, e.g: 1, 3, 7", ""]
     for i, sj in enumerate(scored_jobs, start=1):
         score_disp = f"{int(sj.score)}" if sj.score else "—"
@@ -403,7 +403,7 @@ def send_attachments(
         company:        For the email subject line (used when no thread_subject).
         in_reply_to:    Message-ID of the message being replied to (for threading).
         references:     Space-separated chain of ancestor Message-IDs (for threading).
-        thread_subject: Subject of the thread to continue (e.g. "Re: JobSearcher Digest…").
+        thread_subject: Subject of the thread to continue (e.g. "Re: Today's Job Matches…").
     """
     sender, password = _sender_creds()
     recipient = _recipient()
