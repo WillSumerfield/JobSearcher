@@ -9,10 +9,12 @@ Usage:
     python scripts/add_company.py --name "Stripe" --url "https://stripe.com/jobs" --yes
 
 Detected ATS types:
-    greenhouse  — boards.greenhouse.io (many UK startups and scale-ups)
-    lever       — jobs.lever.co / api.lever.co
-    ashby       — jobs.ashbyhq.com
-    generic     — fallback; HTML scraping via BeautifulSoup
+    greenhouse      — boards.greenhouse.io (many UK startups and scale-ups)
+    lever           — jobs.lever.co / api.lever.co
+    ashby           — jobs.ashbyhq.com
+    workday         — *.wd{N}.myworkdayjobs.com
+    smartrecruiters — careers.smartrecruiters.com
+    generic         — fallback; HTML scraping via BeautifulSoup
 """
 
 import argparse
@@ -36,6 +38,12 @@ _UA = (
 _HEADERS = {"User-Agent": _UA}
 _TIMEOUT = 15
 
+# Workday pattern: captures (tenant, instance_number, board)
+_WORKDAY_RE = re.compile(
+    r"([a-z0-9]+)\.wd(\d+)\.myworkdayjobs\.com/(?:[^/\"' ]+/)?([a-zA-Z0-9_-]+)",
+    re.I,
+)
+
 # Each entry: (compiled pattern to match in URL or HTML, ats_name)
 # The first capture group extracts the company token.
 _ATS_PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -43,6 +51,7 @@ _ATS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"jobs\.lever\.co/([a-z0-9_-]+)", re.I), "lever"),
     (re.compile(r"api\.lever\.co/v0/postings/([a-z0-9_-]+)", re.I), "lever"),
     (re.compile(r"jobs\.ashbyhq\.com/([a-z0-9_-]+)", re.I), "ashby"),
+    (re.compile(r"careers\.smartrecruiters\.com/([a-zA-Z0-9_-]+)", re.I), "smartrecruiters"),
 ]
 
 
@@ -50,10 +59,14 @@ _ATS_PATTERNS: list[tuple[re.Pattern, str]] = [
 # Detection
 # ---------------------------------------------------------------------------
 
-def _detect_ats(url: str) -> tuple[str, str]:
+def _detect_ats(url: str) -> tuple[str, dict]:
     """
     Fetch the careers URL and detect which ATS is in use.
-    Returns (ats_type, token). Token is empty string for 'generic'.
+
+    Returns (ats_type, extra_fields) where extra_fields is a dict:
+      - Most ATS:  {"ats_token": "..."}
+      - Workday:   {"ats_token": tenant, "workday_board": board, "workday_instance": N}
+      - Generic:   {}
     """
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, allow_redirects=True)
@@ -61,42 +74,53 @@ def _detect_ats(url: str) -> tuple[str, str]:
         html = resp.text
     except Exception as exc:
         print(f"  Warning: could not fetch {url}: {exc}", file=sys.stderr)
-        return "generic", ""
+        return "generic", {}
 
-    # 1. Check whether the page redirected to a known ATS URL
+    # 1. Check Workday first (compound config — handled separately)
+    for source in (final_url, html):
+        m = _WORKDAY_RE.search(source)
+        if m:
+            return "workday", {
+                "ats_token": m.group(1).lower(),
+                "workday_instance": int(m.group(2)),
+                "workday_board": m.group(3),
+            }
+
+    # 2. Check whether the page redirected to a known ATS URL
     for pattern, ats_name in _ATS_PATTERNS:
         m = pattern.search(final_url)
         if m:
-            return ats_name, m.group(1)
+            return ats_name, {"ats_token": m.group(1)}
 
-    # 2. Scan page HTML text (links, iframes, inline JS)
+    # 3. Scan page HTML text (links, iframes, inline JS)
     for pattern, ats_name in _ATS_PATTERNS:
         m = pattern.search(html)
         if m:
-            return ats_name, m.group(1)
+            return ats_name, {"ats_token": m.group(1)}
 
-    # 3. Check iframe src attributes
+    # 4. Check iframe src attributes
     soup = BeautifulSoup(html, "html.parser")
     for iframe in soup.find_all("iframe", src=True):
         for pattern, ats_name in _ATS_PATTERNS:
             m = pattern.search(iframe["src"])
             if m:
-                return ats_name, m.group(1)
+                return ats_name, {"ats_token": m.group(1)}
 
-    return "generic", ""
+    return "generic", {}
 
 
 # ---------------------------------------------------------------------------
 # API test
 # ---------------------------------------------------------------------------
 
-def _test_ats(ats: str, token: str, careers_url: str) -> int:
+def _test_ats(ats: str, extra_fields: dict, careers_url: str) -> int:
     """
     Test the detected ATS API. Returns the number of total job listings found
     (not filtered by keyword). Returns 0 on failure.
     """
     try:
         if ats == "greenhouse":
+            token = extra_fields.get("ats_token", "")
             resp = requests.get(
                 f"https://boards.greenhouse.io/v1/boards/{token}/jobs",
                 headers=_HEADERS, timeout=_TIMEOUT,
@@ -105,6 +129,7 @@ def _test_ats(ats: str, token: str, careers_url: str) -> int:
                 return len(resp.json().get("jobs", []))
 
         elif ats == "lever":
+            token = extra_fields.get("ats_token", "")
             resp = requests.get(
                 f"https://api.lever.co/v0/postings/{token}?mode=json",
                 headers=_HEADERS, timeout=_TIMEOUT,
@@ -113,6 +138,7 @@ def _test_ats(ats: str, token: str, careers_url: str) -> int:
                 return len(resp.json())
 
         elif ats == "ashby":
+            token = extra_fields.get("ats_token", "")
             resp = requests.get(
                 f"https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true",
                 headers={**_HEADERS, "Accept": "application/json"},
@@ -120,6 +146,33 @@ def _test_ats(ats: str, token: str, careers_url: str) -> int:
             )
             if resp.status_code == 200:
                 return len(resp.json().get("jobs", []))
+
+        elif ats == "workday":
+            tenant = extra_fields.get("ats_token", "")
+            board = extra_fields.get("workday_board", "")
+            instance = extra_fields.get("workday_instance", 1)
+            api_url = (
+                f"https://{tenant}.wd{instance}.myworkdayjobs.com"
+                f"/wday/cxs/{tenant}/{board}/jobs"
+            )
+            resp = requests.post(
+                api_url,
+                json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
+                headers={**_HEADERS, "Content-Type": "application/json",
+                         "Referer": f"https://{tenant}.wd{instance}.myworkdayjobs.com/en-US/{board}/jobs"},
+                timeout=_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("total", 0)
+
+        elif ats == "smartrecruiters":
+            slug = extra_fields.get("ats_token", "")
+            resp = requests.get(
+                f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=1",
+                headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("totalFound", 0)
 
         else:  # generic
             resp = requests.get(careers_url, headers=_HEADERS, timeout=_TIMEOUT)
@@ -144,12 +197,14 @@ def _company_exists(cfg: dict, name: str) -> bool:
     return any(c.get("name", "").lower() == name.lower() for c in companies)
 
 
-def _append_to_yaml(name: str, careers_url: str, ats: str, token: str) -> None:
+def _append_to_yaml(name: str, careers_url: str, ats: str, extra_fields: dict) -> None:
     """
     Append a new company entry to the target_companies list in profile.yaml.
     Uses line-level string manipulation to preserve comments and formatting.
     """
     lines = CONFIG_PATH.read_text().splitlines()
+
+    token = extra_fields.get("ats_token", "")
 
     # Build the entry block
     entry_lines = [
@@ -159,6 +214,13 @@ def _append_to_yaml(name: str, careers_url: str, ats: str, token: str) -> None:
     ]
     if token:
         entry_lines.append(f'    ats_token: {token}')
+    if ats == "workday":
+        board = extra_fields.get("workday_board", "")
+        instance = extra_fields.get("workday_instance", 1)
+        if board:
+            entry_lines.append(f'    workday_board: {board}')
+        if instance != 1:
+            entry_lines.append(f'    workday_instance: {instance}')
 
     # Find the last line of the target_companies block
     in_target = False
@@ -216,23 +278,27 @@ def main() -> None:
     print(f"URL: {args.url}")
     print()
 
-    ats, token = _detect_ats(args.url)
-    job_count = _test_ats(ats, token, args.url)
+    ats, extra_fields = _detect_ats(args.url)
+    job_count = _test_ats(ats, extra_fields, args.url)
 
-    # Display results table
+    # Display results
     print(f"  Detected ATS  : {ats}")
-    if token:
-        print(f"  Token         : {token}")
+    if ats == "workday":
+        print(f"  Tenant        : {extra_fields.get('ats_token')}")
+        print(f"  Board         : {extra_fields.get('workday_board')}")
+        print(f"  Instance      : wd{extra_fields.get('workday_instance', 1)}")
+    elif extra_fields.get("ats_token"):
+        print(f"  Token         : {extra_fields['ats_token']}")
     else:
         print(f"  Token         : (none — generic HTML scraping)")
     print(f"  Total listings: {job_count}")
     print()
 
-    if job_count == 0 and ats != "generic":
+    if job_count == 0 and ats not in ("generic", "js"):
         print(
             "  Warning: API test returned 0 jobs. "
             "The token may be incorrect or the company has no open roles right now.\n"
-            "  You can manually edit ats_token in profile.yaml after adding.\n"
+            "  You can manually edit the fields in profile.yaml after adding.\n"
         )
 
     if not args.yes:
@@ -245,7 +311,7 @@ def main() -> None:
             print("Cancelled.")
             return
 
-    _append_to_yaml(args.name, args.url, ats, token)
+    _append_to_yaml(args.name, args.url, ats, extra_fields)
     print(f"\n  Added '{args.name}' ({ats}) to config/profile.yaml")
 
 

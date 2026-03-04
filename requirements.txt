@@ -8,3 +8,4 @@ pyyaml
 python-dotenv
 rich
 pandas
+playwright

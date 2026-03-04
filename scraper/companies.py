@@ -2,20 +2,34 @@
 scraper/companies.py
 Scrapes specific company career pages for job listings.
 
-Supports Greenhouse, Lever, and Ashby ATS platforms via their public APIs.
-Falls back to generic HTML scraping for other platforms.
+Supports the following ATS platforms:
+    greenhouse      — boards.greenhouse.io public API
+    lever           — api.lever.co public API
+    ashby           — api.ashbyhq.com public API
+    workday         — Workday CXS API (boards.{tenant}.wd{N}.myworkdayjobs.com)
+    smartrecruiters — api.smartrecruiters.com public API
+    js              — Playwright headless-browser rendering (fallback: generic HTML)
+    generic         — BeautifulSoup HTML scraping (best-effort)
 
 Config schema (one entry in profile.yaml → target_companies):
     - name: "Monzo"
       careers_url: "https://monzo.com/careers/"
-      ats: greenhouse          # greenhouse | lever | ashby | generic
-      ats_token: monzo         # omit for 'generic'
+      ats: greenhouse          # greenhouse | lever | ashby | workday | smartrecruiters | js | generic
+      ats_token: monzo         # ATS-specific identifier (omit for generic/js)
+
+    - name: "BlackRock"
+      careers_url: "https://careers.blackrock.com/"
+      ats: workday
+      ats_token: blackrock          # Workday tenant name
+      workday_board: BlackRock      # Workday board/requisition group ID
+      workday_instance: 1           # The N in wd{N}.myworkdayjobs.com (default: 1)
 """
 
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -64,6 +78,58 @@ def _epoch_ms_to_date(ms: int | None) -> str | None:
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
     except Exception:
         return None
+
+
+def _extract_jobs_from_soup(
+    soup: BeautifulSoup,
+    careers_url: str,
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Walk <a> tags in a parsed page and return keyword-matched job links.
+    Shared by _scrape_generic and _scrape_js.
+    """
+    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+        tag.decompose()
+
+    parsed_base = urlparse(careers_url)
+    base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+    jobs: list[Job] = []
+    seen_urls: set[str] = set()
+
+    for a in soup.find_all("a", href=True):
+        link_text = a.get_text(" ", strip=True)
+        href = a["href"]
+
+        if not link_text or len(link_text) < 5 or len(link_text) > 150:
+            continue
+        if _matches_exclude(link_text, excl_patterns):
+            continue
+        if not _matches_keywords(link_text, kw_patterns):
+            continue
+
+        if href.startswith("/"):
+            href = base_origin + href
+        elif not href.startswith("http"):
+            continue
+
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
+
+        jobs.append(Job(
+            title=link_text,
+            company=company_name,
+            location="",
+            url=href,
+            source="company_careers",
+            description="",
+        ))
+
+    return jobs
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +193,6 @@ def _scrape_lever(slug: str, company_name: str,
         title = p.get("text", "")
         if _matches_exclude(title, excl_patterns):
             continue
-        # Prefer plaintext description; fall back to HTML-stripped
         desc_plain = p.get("descriptionPlain", "") or _strip_html(p.get("description", ""))
         if not _matches_keywords(title + " " + desc_plain, kw_patterns):
             continue
@@ -155,7 +220,6 @@ def _scrape_lever(slug: str, company_name: str,
 def _scrape_ashby(org: str, company_name: str,
                   kw_patterns: list[re.Pattern],
                   excl_patterns: list[str]) -> list[Job]:
-    # Ashby public posting API: path-based org slug, returns JSON with 'jobs' array
     url = f"https://api.ashbyhq.com/posting-api/job-board/{org}?includeCompensation=true"
     try:
         resp = requests.get(
@@ -174,16 +238,12 @@ def _scrape_ashby(org: str, company_name: str,
         title = item.get("title", "")
         if _matches_exclude(title, excl_patterns):
             continue
-        # Prefer plain text; fall back to stripping HTML
         description = item.get("descriptionPlain", "") or _strip_html(item.get("descriptionHtml", ""))
         if not _matches_keywords(title + " " + description, kw_patterns):
             continue
 
-        # location is a plain string in this API version
         location = item.get("location", "") or ""
-
         job_url = item.get("jobUrl", "") or f"https://jobs.ashbyhq.com/{org}/{item.get('id', '')}"
-
         published = item.get("publishedAt", "")
         date_posted = published[:10] if published else None
 
@@ -201,6 +261,219 @@ def _scrape_ashby(org: str, company_name: str,
     return jobs
 
 
+def _scrape_workday(
+    tenant: str,
+    board: str,
+    instance: int,
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Scrape a Workday CXS job board.
+
+    tenant   — Workday tenant slug (e.g. "blackrock")
+    board    — Workday board/requisition group (e.g. "BlackRock")
+    instance — The N in wd{N}.myworkdayjobs.com (e.g. 1)
+    """
+    if not tenant or not board:
+        logger.warning("Workday config missing tenant or board for %s — skipping", company_name)
+        return []
+
+    base_url = (
+        f"https://{tenant}.wd{instance}.myworkdayjobs.com"
+        f"/wday/cxs/{tenant}/{board}/jobs"
+    )
+    referer = f"https://{tenant}.wd{instance}.myworkdayjobs.com/en-US/{board}/jobs"
+    headers = {**_HEADERS, "Content-Type": "application/json", "Referer": referer}
+
+    def _post(offset: int) -> dict:
+        return requests.post(
+            base_url,
+            json={"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": ""},
+            headers=headers,
+            timeout=_TIMEOUT,
+        ).json()
+
+    try:
+        first = _post(0)
+    except Exception as exc:
+        logger.warning("Workday fetch failed for %s: %s", company_name, exc)
+        return []
+
+    total = first.get("total", 0)
+    all_postings = list(first.get("jobPostings", []))
+
+    while len(all_postings) < total:
+        try:
+            batch = _post(len(all_postings)).get("jobPostings", [])
+        except Exception as exc:
+            logger.warning(
+                "Workday pagination error for %s at offset %d: %s",
+                company_name, len(all_postings), exc,
+            )
+            break
+        if not batch:
+            break
+        all_postings.extend(batch)
+
+    jobs: list[Job] = []
+    for posting in all_postings:
+        title = posting.get("title", "")
+        if _matches_exclude(title, excl_patterns):
+            continue
+        if not _matches_keywords(title, kw_patterns):
+            continue
+
+        ext_path = (posting.get("externalPath") or "").lstrip("/")
+        job_url = (
+            f"https://{tenant}.wd{instance}.myworkdayjobs.com"
+            f"/en-US/{board}/job/{ext_path}"
+        )
+        location = posting.get("locationsText", "") or ""
+
+        jobs.append(Job(
+            title=title,
+            company=company_name,
+            location=location,
+            url=job_url,
+            source="company_careers",
+            description="",
+            date_posted=None,  # Workday returns human strings like "Posted 3 Days Ago"
+        ))
+
+    logger.debug(
+        "Workday %s (%s/wd%d/%s): %d/%d job(s) matched",
+        company_name, tenant, instance, board, len(jobs), total,
+    )
+    return jobs
+
+
+def _scrape_smartrecruiters(
+    slug: str,
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """Scrape the SmartRecruiters public postings API."""
+    base_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
+
+    def _get(offset: int) -> dict:
+        return requests.get(
+            base_url,
+            params={"limit": 100, "offset": offset},
+            headers=_HEADERS,
+            timeout=_TIMEOUT,
+        ).json()
+
+    try:
+        first = _get(0)
+    except Exception as exc:
+        logger.warning("SmartRecruiters fetch failed for %s (slug=%s): %s", company_name, slug, exc)
+        return []
+
+    total_found = first.get("totalFound", 0)
+    all_postings = list(first.get("content", []))
+
+    while len(all_postings) < total_found:
+        try:
+            batch = _get(len(all_postings)).get("content", [])
+        except Exception as exc:
+            logger.warning(
+                "SmartRecruiters pagination error for %s at offset %d: %s",
+                company_name, len(all_postings), exc,
+            )
+            break
+        if not batch:
+            break
+        all_postings.extend(batch)
+
+    jobs: list[Job] = []
+    for posting in all_postings:
+        title = posting.get("name", "")
+        if _matches_exclude(title, excl_patterns):
+            continue
+        if not _matches_keywords(title, kw_patterns):
+            continue
+
+        loc_obj = posting.get("location") or {}
+        city = loc_obj.get("city", "") or ""
+        country = loc_obj.get("country", "") or ""
+        location = ", ".join(filter(None, [city, country]))
+
+        job_url = posting.get("ref", "")
+        released = posting.get("releasedDate", "")
+        date_posted = released[:10] if released else None
+
+        jobs.append(Job(
+            title=title,
+            company=company_name,
+            location=location,
+            url=job_url,
+            source="company_careers",
+            description="",
+            date_posted=date_posted,
+        ))
+
+    logger.debug(
+        "SmartRecruiters %s (%s): %d/%d job(s) matched",
+        company_name, slug, len(jobs), total_found,
+    )
+    return jobs
+
+
+def _scrape_js(
+    careers_url: str,
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Render a JavaScript-heavy career page with Playwright and extract job links.
+    Falls back to _scrape_generic if Playwright is not installed/available.
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "JS scrape skipped for %s — playwright not installed "
+            "(run: uv pip install playwright && playwright install chromium)",
+            company_name,
+        )
+        return _scrape_generic(careers_url, company_name, kw_patterns, excl_patterns)
+
+    html = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(user_agent=_UA)
+            page.goto(careers_url, wait_until="networkidle", timeout=60_000)
+            # Scroll once to trigger lazy-loaded content
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(1_500)
+            html = page.content()
+            browser.close()
+    except Exception as exc:
+        logger.warning(
+            "JS scrape failed for %s — falling back to generic HTML. "
+            "If browser binary is missing, run: playwright install chromium. Error: %s",
+            company_name, exc,
+        )
+        return _scrape_generic(careers_url, company_name, kw_patterns, excl_patterns)
+
+    soup = BeautifulSoup(html, "html.parser")
+    jobs = _extract_jobs_from_soup(soup, careers_url, company_name, kw_patterns, excl_patterns)
+
+    if jobs:
+        logger.debug("JS %s: %d matching job link(s) found", company_name, len(jobs))
+    else:
+        logger.debug(
+            "JS %s: 0 jobs found after rendering (page may require interaction beyond initial load)",
+            company_name,
+        )
+    return jobs
+
+
 def _scrape_generic(careers_url: str, company_name: str,
                     kw_patterns: list[re.Pattern],
                     excl_patterns: list[str]) -> list[Job]:
@@ -215,51 +488,13 @@ def _scrape_generic(careers_url: str, company_name: str,
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-        tag.decompose()
-
-    from urllib.parse import urlparse
-    parsed_base = urlparse(careers_url)
-    base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
-
-    jobs: list[Job] = []
-    seen_urls: set[str] = set()
-
-    for a in soup.find_all("a", href=True):
-        link_text = a.get_text(" ", strip=True)
-        href = a["href"]
-
-        if not link_text or len(link_text) < 5 or len(link_text) > 150:
-            continue
-        if _matches_exclude(link_text, excl_patterns):
-            continue
-        if not _matches_keywords(link_text, kw_patterns):
-            continue
-
-        # Resolve relative URLs
-        if href.startswith("/"):
-            href = base_origin + href
-        elif not href.startswith("http"):
-            continue
-
-        if href in seen_urls:
-            continue
-        seen_urls.add(href)
-
-        jobs.append(Job(
-            title=link_text,
-            company=company_name,
-            location="",
-            url=href,
-            source="company_careers",
-            description="",
-        ))
+    jobs = _extract_jobs_from_soup(soup, careers_url, company_name, kw_patterns, excl_patterns)
 
     if jobs:
         logger.debug("Generic %s: %d matching job link(s) found", company_name, len(jobs))
     else:
         logger.debug(
-            "Generic %s: 0 jobs found (page likely requires JavaScript — use a known ATS type)",
+            "Generic %s: 0 jobs found (page likely requires JavaScript — use ats: js)",
             company_name,
         )
     return jobs
@@ -283,6 +518,17 @@ def scrape_company(company_config: dict, cfg: dict) -> list[Job]:
         return _scrape_lever(token or name.lower(), name, kw_patterns, excl_patterns)
     elif ats == "ashby":
         return _scrape_ashby(token or name.lower(), name, kw_patterns, excl_patterns)
+    elif ats == "workday":
+        return _scrape_workday(
+            token,
+            company_config.get("workday_board", ""),
+            int(company_config.get("workday_instance", 1)),
+            name, kw_patterns, excl_patterns,
+        )
+    elif ats == "smartrecruiters":
+        return _scrape_smartrecruiters(token or name.lower(), name, kw_patterns, excl_patterns)
+    elif ats == "js":
+        return _scrape_js(careers_url, name, kw_patterns, excl_patterns)
     else:
         return _scrape_generic(careers_url, name, kw_patterns, excl_patterns)
 
