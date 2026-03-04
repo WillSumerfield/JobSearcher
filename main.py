@@ -157,7 +157,7 @@ def cmd_scrape(limit: int | None) -> None:
 
     for i, sj in enumerate(scored, start=1):
         loc = sj.job.location or "—"
-        score_disp = f"{sj.score:.1f}" if sj.score else "—"
+        score_disp = f"{int(sj.score)}" if sj.score else "—"
         table.add_row(
             str(i),
             sj.job.title,

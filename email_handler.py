@@ -163,7 +163,7 @@ def _score_badge(score: float) -> str:
         bg, fg = "#FFD0D8", "#7A1E2E"
     else:
         bg, fg = "#EEEAEA", "#888888"
-    label = f"{score:.1f}" if score else "—"
+    label = f"{int(score)}" if score else "—"
     return (
         f'<span style="display:inline-block;background:{bg};color:{fg};'
         f'padding:3px 10px;border-radius:99px;font-weight:700;font-size:12px;'
@@ -319,7 +319,7 @@ def _build_plain(scored_jobs: list[ScoredJob], date_str: str) -> str:
     lines = [f"JobSearcher Digest — {date_str}", "=" * 40, "",
              "Reply with numbers to apply, e.g: 1, 3, 7", ""]
     for i, sj in enumerate(scored_jobs, start=1):
-        score_disp = f"{sj.score:.1f}" if sj.score else "—"
+        score_disp = f"{int(sj.score)}" if sj.score else "—"
         lines.append(f"{i:>3}.  {sj.job.title} @ {sj.job.company}")
         lines.append(f"      {sj.job.location or '—'} | {sj.job.salary_display()} | Score: {score_disp}")
         if sj.reason:
