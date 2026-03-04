@@ -106,7 +106,7 @@ def _scrape_greenhouse(token: str, company_name: str,
             date_posted=date_posted,
         ))
 
-    logger.info("Greenhouse %s (%s): %d job(s) matched", company_name, token, len(jobs))
+    logger.debug("Greenhouse %s (%s): %d job(s) matched", company_name, token, len(jobs))
     return jobs
 
 
@@ -148,7 +148,7 @@ def _scrape_lever(slug: str, company_name: str,
             date_posted=date_posted,
         ))
 
-    logger.info("Lever %s (%s): %d job(s) matched", company_name, slug, len(jobs))
+    logger.debug("Lever %s (%s): %d job(s) matched", company_name, slug, len(jobs))
     return jobs
 
 
@@ -197,7 +197,7 @@ def _scrape_ashby(org: str, company_name: str,
             date_posted=date_posted,
         ))
 
-    logger.info("Ashby %s (%s): %d job(s) matched", company_name, org, len(jobs))
+    logger.debug("Ashby %s (%s): %d job(s) matched", company_name, org, len(jobs))
     return jobs
 
 
@@ -256,11 +256,10 @@ def _scrape_generic(careers_url: str, company_name: str,
         ))
 
     if jobs:
-        logger.info("Generic %s: %d matching job link(s) found", company_name, len(jobs))
+        logger.debug("Generic %s: %d matching job link(s) found", company_name, len(jobs))
     else:
-        logger.warning(
-            "Generic %s: no matching jobs found — page may require JavaScript "
-            "or a different ATS configuration.",
+        logger.debug(
+            "Generic %s: 0 jobs found (page likely requires JavaScript — use a known ATS type)",
             company_name,
         )
     return jobs
