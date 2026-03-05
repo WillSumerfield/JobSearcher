@@ -25,6 +25,7 @@ import time
 from datetime import date
 from email.header import decode_header, make_header
 from email.mime.application import MIMEApplication
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -36,6 +37,8 @@ from imapclient import IMAPClient
 from scorer import ScoredJob
 
 logger = logging.getLogger(__name__)
+
+_LINK_ICON_PATH = Path(__file__).parent / "assets" / "link_icon.png"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -132,7 +135,7 @@ _HTML_ROW = """\
       <td style="padding:9px 10px;color:#AA7888;font-size:13px;">{salary}</td>
       <td style="padding:9px 10px;text-align:center;">{score_badge}</td>
       <td style="padding:9px 10px;font-style:italic;color:#AA7888;font-size:12.5px;">{reason}</td>
-      <td style="padding:9px 10px;"><a href="{url}" style="color:#C4607A;text-decoration:none;font-weight:600;font-size:13px;">View &#8594;</a></td>
+      <td style="padding:9px 10px;text-align:center;"><a href="{url}" style="text-decoration:none;" title="View listing">{link_icon}</a></td>
     </tr>
 """
 
@@ -277,6 +280,20 @@ def _fetch_fun_block() -> str:
         game_url = _esc(game["url"])
         game_desc = _esc(game.get("description", ""))
 
+        # Try to fetch the favicon; only include it if the request succeeds.
+        favicon_url = "https://dles.aukspot.com/favicon.png"
+        try:
+            icon_resp = requests.head(favicon_url, timeout=5,
+                                      headers={"User-Agent": "Mozilla/5.0"})
+            icon_html = (
+                f'<img src="{favicon_url}" alt="" width="30" height="30" '
+                f'style="border-radius:4px;vertical-align:middle;margin-right:14px;" />'
+            ) if icon_resp.ok else ""
+        except Exception:  # noqa: BLE001
+            icon_html = ""
+
+        icon_style = "vertical-align:middle;" if icon_html else "display:block;text-align:center;"
+
         listdle_card = (
             '<td style="width:44%;padding-left:10px;vertical-align:top;">'
             '<div style="background:#FFF0F5;border-radius:14px;padding:16px;text-align:center;">'
@@ -288,9 +305,8 @@ def _fetch_fun_block() -> str:
             'style="display:inline-block;background:#FFE4ED;color:#8A2040;text-decoration:none;'
             'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;'
             'line-height:1;">'
-            '<img src="https://dles.aukspot.com/favicon.png" alt="" width="30" height="30" '
-            'style="border-radius:4px;vertical-align:middle;margin-right:14px;" />'
-            f'<span style="vertical-align:middle;">{game_title} &#8594;</span>'
+            + icon_html +
+            f'<span style="{icon_style}">{game_title} &#8594;</span>'
             "</a>"
         )
         if game_desc:
@@ -318,7 +334,8 @@ def _fetch_fun_block() -> str:
         return ""
 
 
-def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = "") -> str:
+def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = "",
+                has_icon: bool = False) -> str:
     rows = []
     for i, sj in enumerate(scored_jobs, start=1):
         bg = "#FFF5F8" if i % 2 == 0 else "#FFFFFF"
@@ -332,6 +349,11 @@ def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = 
             score_badge=_score_badge(sj.score),
             reason=_esc(sj.reason) if sj.reason else "",
             url=sj.job.url,
+            link_icon=(
+                '<img src="cid:link_icon" width="20" height="20" alt="View" '
+                'style="display:block;margin:0 auto;" />'
+                if has_icon else "View &#8594;"
+            ),
         ))
     return (
         _HTML_HEADER.format(date=date_str, intro_block=intro_block)
@@ -396,13 +418,35 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
 
     intro_block = _fetch_fun_block()
 
-    msg = MIMEMultipart("alternative")
+    # Load icon for CID inline embedding (None if file is missing).
+    try:
+        icon_data = _LINK_ICON_PATH.read_bytes()
+    except FileNotFoundError:
+        icon_data = None
+
+    # multipart/related wraps alternative + inline image so email clients
+    # resolve cid:link_icon references inside the HTML part.
+    related = MIMEMultipart("related")
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
+    alternative.attach(MIMEText(
+        _build_html(jobs_to_send, date_str, intro_block=intro_block, has_icon=icon_data is not None),
+        "html", "utf-8",
+    ))
+    related.attach(alternative)
+
+    if icon_data is not None:
+        icon_part = MIMEImage(icon_data, _subtype="png")
+        icon_part["Content-ID"] = "<link_icon>"
+        icon_part["Content-Disposition"] = "inline"
+        related.attach(icon_part)
+
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
     # No Reply-To header: replies go to From (the bot), landing in its inbox for the daemon.
-    msg.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
-    msg.attach(MIMEText(_build_html(jobs_to_send, date_str, intro_block=intro_block), "html", "utf-8"))
+    msg.attach(related)
 
     logger.info("Sending digest: %d jobs → %s", len(jobs_to_send), recipient)
     _smtp_send(sender, password, recipient, msg)
@@ -471,15 +515,24 @@ def _parse_indices(body: str) -> list[int]:
     """
     Extract 1-based job indices from the user's reply body.
 
-    Strips quoted lines ("> ...") and "On ... wrote:" markers before
-    searching, so "1, 3, 7" or "1 3 7" or "1\\n3\\n7" all work.
+    Stops collecting at the first quoted line ("> ...") or at the email
+    attribution header ("On Mon, 5 Mar 2026 ... wrote:"), including the
+    common multi-line form where the header wraps across several lines.
+    This prevents numbers embedded in the quoted digest from leaking into
+    the result when a client doesn't terminate the header with "wrote:" on
+    the same line.
     """
     clean_lines = []
     for line in body.splitlines():
         stripped = line.strip()
+        # First quoted line signals the start of the original message — stop.
         if stripped.startswith(">"):
-            continue
-        if re.match(r"^On .+ wrote:$", stripped):
+            break
+        # Single-line attribution: "On Wed, 5 Mar 2026 at 10:00, Name wrote:"
+        if re.match(r"^On .+wrote:", stripped):
+            break
+        # Multi-line attribution opening: "On Mon," / "On Wednesday," etc.
+        if re.match(r"^On [A-Z][a-z]{2,},?\s+\d", stripped):
             break
         clean_lines.append(stripped)
 
@@ -511,18 +564,34 @@ def _is_digest_reply(subject: str, sender_addr: str, expected_sender: str) -> bo
 
 
 def _extract_body(raw_message: bytes) -> str:
-    """Extract the plain-text body from a raw MIME email."""
+    """
+    Extract the plain-text body from a raw MIME email.
+
+    Prefers text/plain parts.  If none are found (HTML-only email clients),
+    falls back to stripping HTML with BeautifulSoup so replies from mobile
+    clients are still readable.
+    """
     msg = email_lib.message_from_bytes(raw_message)
+    html_fallback: str | None = None
+
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            ct = part.get_content_type()
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            if ct == "text/plain":
+                return text
+            if ct == "text/html" and html_fallback is None:
+                html_fallback = text
     else:
         payload = msg.get_payload(decode=True)
         if payload:
             return payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+
+    if html_fallback:
+        return BeautifulSoup(html_fallback, "html.parser").get_text("\n")
     return ""
 
 
@@ -594,6 +663,13 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
         if not indices:
             logger.warning("Reply from user had no valid indices "
                            "(subject=%r, body snippet=%r)", subject, body[:100])
+            _send_error_note(
+                ["I received your reply but couldn't find any job numbers in it.\n"
+                 "  Please reply with the numbers of the roles you want, e.g: 1, 3, 7"],
+                in_reply_to=reply_msg_id,
+                references=reply_references,
+                thread_subject=subject,
+            )
             client.set_flags([uid], [b"\\Seen"])
             continue
 
@@ -638,12 +714,22 @@ def _process_new_messages(client: IMAPClient, cfg: dict, db) -> None:
             )
 
         if errors:
-            _send_error_note(errors)
+            _send_error_note(
+                errors,
+                in_reply_to=reply_msg_id,
+                references=reply_references,
+                thread_subject=subject,
+            )
 
         client.set_flags([uid], [b"\\Seen"])
 
 
-def _send_error_note(errors: list[str]) -> None:
+def _send_error_note(
+    errors: list[str],
+    in_reply_to: str = "",
+    references: str = "",
+    thread_subject: str = "",
+) -> None:
     """Send a plain-text note FROM the bot TO the user about processing issues."""
     sender, password = _sender_creds()
     recipient = _recipient()
@@ -652,10 +738,15 @@ def _send_error_note(errors: list[str]) -> None:
     body += "\n".join(f"  • {e}" for e in errors)
     body += "\n"
 
+    subject = thread_subject or "JobSearcher — Processing Notes"
     msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = "JobSearcher — Processing Notes"
+    msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
     _smtp_send(sender, password, recipient, msg)
 
 

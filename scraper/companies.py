@@ -536,6 +536,87 @@ def _scrape_millennium(
     return jobs
 
 
+def _scrape_uber(
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Uber — internal SPA jobs API.
+    Discovered via scripts/find_jobs_api.py network interception.
+    Fetches up to 1000 London/UK jobs in a single POST; filters by GBR country code.
+    """
+    url = "https://www.uber.com/api/loadSearchJobsResults?localeCode=en-GB"
+    headers = {
+        **_HEADERS,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.uber.com",
+        "Referer": "https://www.uber.com/gb/en/careers/",
+        "x-csrf-token": "x",
+    }
+    try:
+        resp = requests.post(
+            url,
+            json={"params": {"location": [], "query": "", "limit": 1000, "page": 1}},
+            headers=headers,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Uber API fetch failed: %s", exc)
+        return []
+
+    if data.get("status") != "success":
+        logger.warning("Uber API returned non-success status: %s", data.get("status"))
+        return []
+
+    all_postings = data.get("data", {}).get("results", [])
+
+    jobs: list[Job] = []
+    for posting in all_postings:
+        title = posting.get("title", "")
+        if _matches_exclude(title, excl_patterns):
+            continue
+        if not _matches_keywords(title, kw_patterns):
+            continue
+
+        # Filter to GBR only
+        loc = posting.get("location") or {}
+        all_locs = posting.get("allLocations") or [loc]
+        is_uk = any(
+            (l.get("country") or "").upper() == "GBR"
+            for l in all_locs
+            if isinstance(l, dict)
+        )
+        if not is_uk:
+            continue
+
+        city = loc.get("city", "") or ""
+        country_name = loc.get("countryName", "") or ""
+        location = ", ".join(filter(None, [city, country_name]))
+
+        job_id = posting.get("id", "")
+        job_url = f"https://www.uber.com/global/en/careers/list/{job_id}/" if job_id else ""
+        created = posting.get("creationDate", "")
+        date_posted = created[:10] if created else None
+        description = posting.get("description", "") or ""
+
+        jobs.append(Job(
+            title=title,
+            company=company_name,
+            location=location,
+            url=job_url,
+            source="company_careers",
+            description=description,
+            date_posted=date_posted,
+        ))
+
+    logger.debug("Custom Uber: %d/%d job(s) matched (UK-filtered)", len(jobs), len(all_postings))
+    return jobs
+
+
 def _scrape_dufrain(
     company_name: str,
     kw_patterns: list[re.Pattern],
@@ -649,6 +730,7 @@ def scrape_company(company_config: dict, cfg: dict) -> list[Job]:
         _CUSTOM_SCRAPERS = {
             "millennium": _scrape_millennium,
             "dufrain":    _scrape_dufrain,
+            "uber":       _scrape_uber,
         }
         scraper_name = company_config.get("custom_scraper", "").lower()
         fn = _CUSTOM_SCRAPERS.get(scraper_name)
