@@ -30,6 +30,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup, NavigableString
 from imapclient import IMAPClient
 
 from scorer import ScoredJob
@@ -171,28 +172,52 @@ def _score_badge(score: float) -> str:
     )
 
 
-def _fetch_listdle_game() -> dict:
-    """
-    Fetch https://listdle.com/games.json, filter out sports games, and return
-    a deterministic game for today (stable within a day, changes each day).
+EXCLUDE_CATEGORIES = {"Sports", "Music", "Sponsors"}
 
-    Falls back to a generic Listdle homepage entry on any error.
+
+def _fetch_dles_game() -> dict:
     """
-    fallback = {"title": "Listdle", "url": "https://listdle.com/", "description": ""}
+    Scrape https://dles.aukspot.com/, collect all non-Sports games, and return
+    a deterministic entry for today (stable within a day, changes each day).
+
+    Falls back to a generic dles.aukspot.com link on any error.
+    """
+    fallback = {"title": "Dles", "url": "https://dles.aukspot.com/", "description": ""}
     try:
         resp = requests.get(
-            "https://listdle.com/games.json",
+            "https://dles.aukspot.com/",
             timeout=10,
             headers={"User-Agent": "Mozilla/5.0 (compatible; JobSearcher/1.0)"},
         )
         resp.raise_for_status()
-        all_games = resp.json()
-        games = [g for g in all_games if g.get("category") != "sports"]
+        soup = BeautifulSoup(resp.text, "html.parser")
+        games: list[dict] = []
+        for card in soup.find_all("div", class_="card"):
+            label_div = card.find("div", class_="label")
+            if not label_div:
+                continue
+            # Category name is a direct text node inside label_div (SVG is a child tag, not text)
+            direct_texts = [
+                str(t).strip()
+                for t in label_div.children
+                if isinstance(t, NavigableString) and str(t).strip()
+            ]
+            category = " ".join(direct_texts)
+            if category in EXCLUDE_CATEGORIES:
+                continue
+            ol = card.find("ol")
+            if not ol:
+                continue
+            for a in ol.find_all("a", href=True):
+                title = a.get_text(strip=True)
+                href = a["href"]
+                if title and href.startswith("http"):
+                    games.append({"title": title, "url": href, "description": category})
         if not games:
             return fallback
         return games[date.today().toordinal() % len(games)]
     except Exception:  # noqa: BLE001
-        logger.warning("Listdle games.json fetch failed — using homepage fallback.")
+        logger.warning("dles.aukspot.com fetch failed — using homepage fallback.")
         return fallback
 
 
@@ -247,7 +272,7 @@ def _fetch_fun_block() -> str:
             + "</div></td>"
         )
 
-        game = _fetch_listdle_game()
+        game = _fetch_dles_game()
         game_title = _esc(game["title"])
         game_url = _esc(game["url"])
         game_desc = _esc(game.get("description", ""))
@@ -263,7 +288,7 @@ def _fetch_fun_block() -> str:
             'style="display:inline-block;background:#FFE4ED;color:#8A2040;text-decoration:none;'
             'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;'
             'line-height:1;">'
-            '<img src="https://listdle.com/favicon.ico" alt="" width="30" height="30" '
+            '<img src="https://dles.aukspot.com/favicon.png" alt="" width="30" height="30" '
             'style="border-radius:4px;vertical-align:middle;margin-right:14px;" />'
             f'<span style="vertical-align:middle;">{game_title} &#8594;</span>'
             "</a>"

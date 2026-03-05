@@ -16,9 +16,12 @@ Stage 2 — Claude ranking (API call):
 
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from scraper.models import Job
 
@@ -145,6 +148,22 @@ def _keyword_score(jobs: list[Job], cfg: dict) -> list[tuple[Job, int]]:
 # Stage 2: Claude ranking
 # ---------------------------------------------------------------------------
 
+def _find_claude() -> str:
+    """Locate the claude CLI, expanding PATH to include common user-local dirs."""
+    extra = [
+        Path.home() / ".local" / "bin",
+        Path.home() / ".npm" / "bin",
+        Path("/usr/local/bin"),
+    ]
+    search_path = ":".join(str(p) for p in extra) + ":" + os.environ.get("PATH", "")
+    found = shutil.which("claude", path=search_path)
+    if not found:
+        raise FileNotFoundError(
+            "claude CLI not found. Searched PATH + ~/.local/bin, ~/.npm/bin, /usr/local/bin. "
+            "Install it or ensure it is on PATH."
+        )
+    return found
+
 def _build_prompt(jobs: list[Job], cfg: dict) -> str:
     skills_text = ", ".join(cfg.get("skills", []))
     education_text = "; ".join(cfg.get("education", []))
@@ -208,10 +227,10 @@ def _claude_rank(jobs: list[Job], cfg: dict) -> dict[int, dict]:
     prompt = _build_prompt(jobs, cfg)
 
     logger.info("Sending %d jobs to Claude for ranking…", len(jobs))
-    import os
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    claude_bin = _find_claude()
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        [claude_bin, "-p", prompt],
         capture_output=True, text=True, timeout=180, env=env,
     )
     if result.returncode != 0:
