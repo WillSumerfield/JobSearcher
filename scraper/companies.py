@@ -10,19 +10,18 @@ Supports the following ATS platforms:
     smartrecruiters — api.smartrecruiters.com public API
     js              — Playwright headless-browser rendering (fallback: generic HTML)
     generic         — BeautifulSoup HTML scraping (best-effort)
+    custom          — Per-company custom API (set custom_scraper: <name> in profile.yaml)
 
 Config schema (one entry in profile.yaml → target_companies):
     - name: "Monzo"
       careers_url: "https://monzo.com/careers/"
-      ats: greenhouse          # greenhouse | lever | ashby | workday | smartrecruiters | js | generic
-      ats_token: monzo         # ATS-specific identifier (omit for generic/js)
+      ats: greenhouse          # greenhouse | lever | ashby | workday | smartrecruiters | js | generic | custom
+      ats_token: monzo         # ATS-specific identifier (omit for generic/js/custom)
 
-    - name: "BlackRock"
-      careers_url: "https://careers.blackrock.com/"
-      ats: workday
-      ats_token: blackrock          # Workday tenant name
-      workday_board: BlackRock      # Workday board/requisition group ID
-      workday_instance: 1           # The N in wd{N}.myworkdayjobs.com (default: 1)
+    - name: "Millennium Management"
+      careers_url: "https://career.mlp.com/careers"
+      ats: custom
+      custom_scraper: millennium   # maps to _scrape_millennium() below
 """
 
 import logging
@@ -474,6 +473,123 @@ def _scrape_js(
     return jobs
 
 
+def _scrape_millennium(
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Millennium Management — Eightfold.ai career API.
+    Discovered via scripts/find_jobs_api.py.
+    """
+    base_url = "https://career.mlp.com/api/apply/v2/jobs/755954850488/jobs"
+    all_positions: list[dict] = []
+    start = 0
+    num = 100
+
+    while True:
+        try:
+            resp = requests.get(
+                base_url,
+                params={"domain": "mlp.com", "start": start, "num": num},
+                headers=_HEADERS,
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("Millennium API fetch failed at offset %d: %s", start, exc)
+            break
+
+        positions = data.get("positions", [])
+        if not positions:
+            break
+        all_positions.extend(positions)
+        start += len(positions)
+        if len(positions) < num:
+            break
+
+    jobs: list[Job] = []
+    for p in all_positions:
+        title = p.get("name", "")
+        if _matches_exclude(title, excl_patterns) or not _matches_keywords(title, kw_patterns):
+            continue
+
+        location = p.get("location", "") or ""
+        url = p.get("canonicalPositionUrl", "") or ""
+        t_update = p.get("t_update")
+        date_posted = _epoch_ms_to_date(int(t_update) * 1000) if t_update else None
+
+        jobs.append(Job(
+            title=title,
+            company=company_name,
+            location=location,
+            url=url,
+            source="company_careers",
+            description="",
+            date_posted=date_posted,
+        ))
+
+    logger.debug(
+        "Custom Millennium: %d/%d job(s) matched", len(jobs), len(all_positions),
+    )
+    return jobs
+
+
+def _scrape_dufrain(
+    company_name: str,
+    kw_patterns: list[re.Pattern],
+    excl_patterns: list[str],
+) -> list[Job]:
+    """
+    Dufrain — HiBob job board API.
+    Discovered via scripts/find_jobs_api.py.
+    """
+    try:
+        resp = requests.get(
+            "https://dufrainconsulting.careers.hibob.com/api/job-ad",
+            headers={
+                **_HEADERS,
+                "companyidentifier": "dufrainconsulting",
+                "Accept": "application/json",
+                "Referer": "https://dufrainconsulting.careers.hibob.com/jobs",
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Dufrain HiBob API fetch failed: %s", exc)
+        return []
+
+    all_items = data.get("jobAdDetails", [])
+    jobs: list[Job] = []
+    for item in all_items:
+        title = item.get("title", "")
+        if _matches_exclude(title, excl_patterns) or not _matches_keywords(title, kw_patterns):
+            continue
+
+        job_id = item.get("id", "")
+        url = f"https://dufrainconsulting.careers.hibob.com/jobs/{job_id}"
+        location = item.get("site", "") or item.get("country", "") or ""
+        published = item.get("publishedAt", "")
+        date_posted = published[:10] if published else None
+        description = _strip_html(item.get("description", "") or "")
+
+        jobs.append(Job(
+            title=title,
+            company=company_name,
+            location=location,
+            url=url,
+            source="company_careers",
+            description=description,
+            date_posted=date_posted,
+        ))
+
+    logger.debug("Custom Dufrain: %d/%d job(s) matched", len(jobs), len(all_items))
+    return jobs
+
+
 def _scrape_generic(careers_url: str, company_name: str,
                     kw_patterns: list[re.Pattern],
                     excl_patterns: list[str]) -> list[Job]:
@@ -528,6 +644,20 @@ def scrape_company(company_config: dict, cfg: dict) -> list[Job]:
     elif ats == "smartrecruiters":
         return _scrape_smartrecruiters(token or name.lower(), name, kw_patterns, excl_patterns)
     elif ats == "js":
+        return _scrape_js(careers_url, name, kw_patterns, excl_patterns)
+    elif ats == "custom":
+        _CUSTOM_SCRAPERS = {
+            "millennium": _scrape_millennium,
+            "dufrain":    _scrape_dufrain,
+        }
+        scraper_name = company_config.get("custom_scraper", "").lower()
+        fn = _CUSTOM_SCRAPERS.get(scraper_name)
+        if fn:
+            return fn(name, kw_patterns, excl_patterns)
+        logger.warning(
+            "No custom scraper registered for '%s' (custom_scraper: %s) — falling back to js",
+            name, scraper_name,
+        )
         return _scrape_js(careers_url, name, kw_patterns, excl_patterns)
     else:
         return _scrape_generic(careers_url, name, kw_patterns, excl_patterns)
