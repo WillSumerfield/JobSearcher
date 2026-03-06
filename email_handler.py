@@ -374,8 +374,8 @@ def _fetch_fun_block() -> str:
         )
 
         bunny_card = (
-            '<td style="width:56%;padding-right:10px;vertical-align:top;">'
-            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
+            '<td rowspan="2" style="width:56%;padding-right:10px;vertical-align:top;">'
+            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;height:100%;">'
             '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
             "Today&#39;s Runny Babbit &#x1F407;"
@@ -430,7 +430,7 @@ def _fetch_fun_block() -> str:
             "</div></td>"
         )
 
-        # --- DataLemur challenge card ---
+        # --- DataLemur challenge cell (second row, right column) ---
         challenge = _datalemur_challenge()
         diff = challenge["difficulty"]
         badge_bg, badge_fg = _DIFFICULTY_BADGE_STYLE.get(diff, ("#EEEEEE", "#444444"))
@@ -439,36 +439,34 @@ def _fetch_fun_block() -> str:
             f'padding:2px 9px;border-radius:99px;font-weight:700;font-size:12px;">'
             f'{_esc(diff)}</span>'
         )
-        challenge_card = (
-            '<div style="padding:0 32px 20px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
-            '<div style="background:#EEF2FF;border-radius:14px;padding:14px 18px;">'
-            '<table style="width:100%;border-collapse:collapse;"><tr>'
-            '<td style="vertical-align:middle;">'
-            '<p style="margin:0 0 5px;font-family:Georgia,Cambria,serif;'
+        challenge_cell = (
+            '<td style="width:44%;padding-left:10px;vertical-align:top;">'
+            '<div style="background:#EEF2FF;border-radius:14px;padding:16px;text-align:center;">'
+            '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
             "Today&#39;s Code Challenge &#x1F4BB;"
             "</p>"
-            f'<p style="margin:0;font-size:13px;color:#5C2A3A;">'
-            f'{_esc(challenge["company"])} &nbsp;&bull;&nbsp; {diff_badge}</p>'
-            "</td>"
-            '<td style="vertical-align:middle;text-align:right;white-space:nowrap;">'
             f'<a href="{_esc(challenge["url"])}" '
             'style="display:inline-block;background:#3B5BDB;color:#FFFFFF;text-decoration:none;'
-            'padding:10px 18px;border-radius:10px;font-weight:700;font-size:15px;">'
+            'padding:10px 16px;border-radius:10px;font-weight:700;font-size:15px;'
+            'line-height:1.3;">'
             f'{_esc(challenge["title"])} &#8594;'
             "</a>"
-            "</td>"
-            "</tr></table>"
-            "</div></div>"
+            f'<p style="margin:10px 0 0;font-size:12.5px;color:#AA7888;">'
+            f'{_esc(challenge["company"])} &nbsp;&bull;&nbsp; {diff_badge}</p>'
+            "</div></td>"
         )
 
         return (
             '<div style="padding:20px 32px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
-            '<table style="width:100%;border-collapse:collapse;"><tr>'
+            '<table style="width:100%;border-collapse:collapse;">'
+            "<tr>"
             + bunny_card
             + listdle_card
-            + "</tr></table></div>"
-            + challenge_card
+            + "</tr><tr>"
+            + challenge_cell
+            + "</tr>"
+            "</table></div>"
         )
 
     except Exception:  # noqa: BLE001
