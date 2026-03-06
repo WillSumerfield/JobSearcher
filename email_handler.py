@@ -177,6 +177,115 @@ def _score_badge(score: float) -> str:
 
 EXCLUDE_CATEGORIES = {"Sports", "Music", "Sponsors"}
 
+# ---------------------------------------------------------------------------
+# DataLemur daily code challenge
+# ---------------------------------------------------------------------------
+
+_DATALEMUR_QUESTIONS: list[dict] = [
+    # Easy
+    {"title": "Histogram of Tweets",            "slug": "sql-histogram-tweets",               "difficulty": "Easy",   "company": "Twitter"},
+    {"title": "Data Science Skills",             "slug": "matching-skills",                    "difficulty": "Easy",   "company": "LinkedIn"},
+    {"title": "Page With No Likes",              "slug": "sql-page-with-no-likes",             "difficulty": "Easy",   "company": "Facebook"},
+    {"title": "Unfinished Parts",                "slug": "tesla-unfinished-parts",             "difficulty": "Easy",   "company": "Tesla"},
+    {"title": "Laptop vs. Mobile Viewership",    "slug": "laptop-mobile-viewership",           "difficulty": "Easy",   "company": "NY Times"},
+    {"title": "Coin Fairness Test",              "slug": "coin-fairness-test",                 "difficulty": "Easy",   "company": "Facebook"},
+    {"title": "Precision/Recall Tradeoff",       "slug": "precision-recall-tradeoff",          "difficulty": "Easy",   "company": "BCG Gamma"},
+    {"title": "Average Post Hiatus (Part 1)",    "slug": "sql-average-post-hiatus-1",          "difficulty": "Easy",   "company": "Facebook"},
+    {"title": "Teams Power Users",               "slug": "teams-power-users",                  "difficulty": "Easy",   "company": "Microsoft"},
+    {"title": "4 Rolls To 4",                    "slug": "4-rolls-to-4",                       "difficulty": "Easy",   "company": "Visa"},
+    {"title": "Base 13 Conversion",              "slug": "python-base-13-conversion",          "difficulty": "Easy",   "company": "Capital One"},
+    {"title": "Same Stripes",                    "slug": "python-same-stripes",                "difficulty": "Easy",   "company": "ServiceNow"},
+    {"title": "Factorial Formula",               "slug": "python-factorial-formula",           "difficulty": "Easy",   "company": "Microsoft"},
+    {"title": "Intersection of Two Lists",       "slug": "python-intersection-of-two-lists",   "difficulty": "Easy",   "company": "Amazon"},
+    {"title": "Another One",                     "slug": "python-add-another-one",             "difficulty": "Easy",   "company": "Spotify"},
+    {"title": "Weakest Strong Link",             "slug": "python-weakest-strong-link",         "difficulty": "Easy",   "company": "Intuit"},
+    {"title": "Fizz Buzz Sum",                   "slug": "python-fizz-buzz-sum",               "difficulty": "Easy",   "company": "Google"},
+    {"title": "Compound Interest",               "slug": "python-compound-interest",           "difficulty": "Easy",   "company": "Fintech"},
+    {"title": "Triangular Sum",                  "slug": "python-triangular-sum-of-an-array",  "difficulty": "Easy",   "company": "TikTok"},
+    {"title": "Duplicate Job Listings",          "slug": "duplicate-job-listings",             "difficulty": "Easy",   "company": "LinkedIn"},
+    {"title": "Cities With Completed Trades",    "slug": "completed-trades",                   "difficulty": "Easy",   "company": "Robinhood"},
+    {"title": "Contains Duplicate",              "slug": "python-contains-duplicate",          "difficulty": "Easy",   "company": "Apple"},
+    {"title": "Roman to Integer",                "slug": "python-roman-to-integer",            "difficulty": "Easy",   "company": "Palantir"},
+    {"title": "Counting Letters In Numbers",     "slug": "python-counting-letters-in-numbers", "difficulty": "Easy",   "company": "Tesla"},
+    {"title": "Average Review Ratings",          "slug": "sql-avg-review-ratings",             "difficulty": "Easy",   "company": "Amazon"},
+    {"title": "Well Paid Employees",             "slug": "sql-well-paid-employees",            "difficulty": "Easy",   "company": "FAANG"},
+    {"title": "Final Account Balance",           "slug": "final-account-balance",              "difficulty": "Easy",   "company": "PayPal"},
+    {"title": "Is Anagram?",                     "slug": "python-is-anagram",                  "difficulty": "Easy",   "company": "Workday"},
+    {"title": "Pascals Triangle",                "slug": "python-pascals-triangle",            "difficulty": "Easy",   "company": "Uber"},
+    {"title": "App Click-through Rate (CTR)",    "slug": "click-through-rate",                 "difficulty": "Easy",   "company": "Facebook"},
+    {"title": "Second Day Confirmation",         "slug": "second-day-confirmation",            "difficulty": "Easy",   "company": "TikTok"},
+    {"title": "Is Palindrome",                   "slug": "python-palindrome",                  "difficulty": "Easy",   "company": "Spotify"},
+    {"title": "IBM db2 Product Analytics",       "slug": "sql-ibm-db2-product-analytics",      "difficulty": "Easy",   "company": "IBM"},
+    {"title": "Cards Issued Difference",         "slug": "cards-issued-difference",            "difficulty": "Easy",   "company": "JPMorgan"},
+    {"title": "Compressed Mean",                 "slug": "alibaba-compressed-mean",            "difficulty": "Easy",   "company": "Alibaba"},
+    {"title": "Pharmacy Analytics (Part 1)",     "slug": "top-profitable-drugs",               "difficulty": "Easy",   "company": "CVS Health"},
+    {"title": "Pharmacy Analytics (Part 2)",     "slug": "non-profitable-drugs",               "difficulty": "Easy",   "company": "CVS Health"},
+    {"title": "Pharmacy Analytics (Part 3)",     "slug": "total-drugs-sales",                  "difficulty": "Easy",   "company": "CVS Health"},
+    {"title": "Assumptions of Linear Regression","slug": "assumptions-linear-regression",      "difficulty": "Easy",   "company": "McKinsey"},
+    {"title": "Patient Support Analysis (Part 1)","slug": "frequent-callers",                  "difficulty": "Easy",   "company": "UnitedHealth"},
+    # Medium
+    {"title": "Lazy Movie Raters",               "slug": "netflix-interview-lazy-raters",      "difficulty": "Medium", "company": "Netflix"},
+    {"title": "User's Third Transaction",        "slug": "sql-third-transaction",              "difficulty": "Medium", "company": "Uber"},
+    {"title": "Second Highest Salary",           "slug": "sql-second-highest-salary",          "difficulty": "Medium", "company": "FAANG"},
+    {"title": "Sending vs. Opening Snaps",       "slug": "time-spent-snaps",                   "difficulty": "Medium", "company": "Snapchat"},
+    {"title": "Tweets' Rolling Averages",        "slug": "rolling-average-tweets",             "difficulty": "Medium", "company": "Twitter"},
+    {"title": "Consecutive Fives",               "slug": "consecutive-fives",                  "difficulty": "Medium", "company": "Akuna Capital"},
+    {"title": "Highest-Grossing Items",          "slug": "sql-highest-grossing",               "difficulty": "Medium", "company": "Amazon"},
+    {"title": "Top Three Salaries",              "slug": "sql-top-three-salaries",             "difficulty": "Medium", "company": "FAANG"},
+    {"title": "Signup Activation Rate",          "slug": "signup-confirmation-rate",           "difficulty": "Medium", "company": "TikTok"},
+    {"title": "Spotify Streaming History",       "slug": "spotify-streaming-history",          "difficulty": "Medium", "company": "Spotify"},
+    {"title": "Longest Consecutive Sequence",    "slug": "python-longest-consecutive-sequence","difficulty": "Medium", "company": "FAANG"},
+    {"title": "Looping Number",                  "slug": "python-looping-number",              "difficulty": "Medium", "company": "Fintech"},
+    {"title": "Gift Card Satisfaction",          "slug": "python-gift-card-satisfaction",      "difficulty": "Medium", "company": "FAANG"},
+    {"title": "Matrix Rotation",                 "slug": "python-martix-rotation",             "difficulty": "Medium", "company": "Salesforce"},
+    {"title": "Clock-wise Matrix Rotation",      "slug": "python-clock-wise-matrix-rotation",  "difficulty": "Medium", "company": "Adobe"},
+    {"title": "Min Amplitude",                   "slug": "python-min-amplitude",               "difficulty": "Medium", "company": "Google"},
+    {"title": "Average Subarray",                "slug": "python-average-subarray",            "difficulty": "Medium", "company": "Walmart"},
+    {"title": "k-Radius Average",                "slug": "python-k-radius-average",            "difficulty": "Medium", "company": "Databricks"},
+    {"title": "Idle GPU Days",                   "slug": "python-idle-gpu-days",               "difficulty": "Medium", "company": "FAANG"},
+    {"title": "Hill Climbing",                   "slug": "python-hill-climbing",               "difficulty": "Medium", "company": "Swiggy"},
+    {"title": "Video Ads Insertion",             "slug": "python-video-ads-insertion",         "difficulty": "Medium", "company": "Facebook"},
+    {"title": "Spiral Matrix",                   "slug": "python-spiral-matrix",               "difficulty": "Medium", "company": "Walmart"},
+    {"title": "Data Conference Attendees",       "slug": "python-data-conference-attendees",   "difficulty": "Medium", "company": "FAANG"},
+    {"title": "Supercloud Customer",             "slug": "supercloud-customer",                "difficulty": "Medium", "company": "Microsoft"},
+    {"title": "Real Estate Modelling",           "slug": "real-estate-modelling",              "difficulty": "Medium", "company": "Blackstone"},
+    {"title": "Most Popular Integers",           "slug": "python-most-popular-integers",       "difficulty": "Medium", "company": "Google"},
+    {"title": "Factorial Trailing Zeroes",       "slug": "python-factorial-trailing-zeroes",   "difficulty": "Medium", "company": "Microsoft"},
+    {"title": "Generate Fractions",              "slug": "python-generate-fractions",          "difficulty": "Medium", "company": "Blackstone"},
+    {"title": "Max Product of Three Numbers",    "slug": "python-maximum-product-three-numbers","difficulty": "Medium", "company": "D.E. Shaw"},
+    {"title": "Two Sum",                         "slug": "python-two-sum",                     "difficulty": "Medium", "company": "Amazon"},
+    {"title": "Two Sum (Part 2)",                "slug": "python-two-sum-2",                   "difficulty": "Medium", "company": "Amazon"},
+    {"title": "Two Sum (Part 3)",                "slug": "python-two-sum-3",                   "difficulty": "Medium", "company": "Amazon"},
+    {"title": "Pearson Correlation Coefficient", "slug": "python-pearson-correlation-coefficient","difficulty": "Medium", "company": "AQR"},
+    {"title": "Largest Contiguous Subarray Sum", "slug": "python-largest-contiguous-subarray-sum","difficulty": "Medium", "company": "Akuna Capital"},
+    {"title": "Biased Coin?",                    "slug": "biased-coin",                        "difficulty": "Medium", "company": "D.E. Shaw"},
+    {"title": "Odd and Even Measurements",       "slug": "odd-even-measurements",              "difficulty": "Medium", "company": "Google"},
+    {"title": "Swapped Food Delivery",           "slug": "sql-swapped-food-delivery",          "difficulty": "Medium", "company": "Zomato"},
+    {"title": "Coin Change",                     "slug": "python-coin-change",                 "difficulty": "Medium", "company": "Amazon"},
+    {"title": "FAANG Stock Min-Max (Part 1)",    "slug": "sql-bloomberg-stock-min-max-1",      "difficulty": "Medium", "company": "Bloomberg"},
+    {"title": "Best-Selling Product",            "slug": "best-selling-products",              "difficulty": "Medium", "company": "Amazon"},
+    {"title": "User Shopping Sprees",            "slug": "amazon-shopping-spree",              "difficulty": "Medium", "company": "Amazon"},
+    {"title": "Histogram of Users and Purchases","slug": "histogram-users-purchases",          "difficulty": "Medium", "company": "Walmart"},
+    {"title": "Compressed Mode",                 "slug": "alibaba-compressed-mode",            "difficulty": "Medium", "company": "Alibaba"},
+]
+
+_DIFFICULTY_BADGE_STYLE: dict[str, tuple[str, str]] = {
+    "Easy":   ("#B8EED0", "#1B5E38"),
+    "Medium": ("#FFE8A8", "#6B4700"),
+    "Hard":   ("#FFD0D8", "#7A1E2E"),
+}
+
+
+def _datalemur_challenge() -> dict:
+    """Return a date-seeded DataLemur question (stable within a day)."""
+    q = _DATALEMUR_QUESTIONS[date.today().toordinal() % len(_DATALEMUR_QUESTIONS)]
+    return {
+        "title": q["title"],
+        "url": f"https://datalemur.com/questions/{q['slug']}",
+        "difficulty": q["difficulty"],
+        "company": q["company"],
+    }
+
 
 def _fetch_dles_game() -> dict:
     """
@@ -321,12 +430,45 @@ def _fetch_fun_block() -> str:
             "</div></td>"
         )
 
+        # --- DataLemur challenge card ---
+        challenge = _datalemur_challenge()
+        diff = challenge["difficulty"]
+        badge_bg, badge_fg = _DIFFICULTY_BADGE_STYLE.get(diff, ("#EEEEEE", "#444444"))
+        diff_badge = (
+            f'<span style="display:inline-block;background:{badge_bg};color:{badge_fg};'
+            f'padding:2px 9px;border-radius:99px;font-weight:700;font-size:12px;">'
+            f'{_esc(diff)}</span>'
+        )
+        challenge_card = (
+            '<div style="padding:0 32px 20px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
+            '<div style="background:#EEF2FF;border-radius:14px;padding:14px 18px;">'
+            '<table style="width:100%;border-collapse:collapse;"><tr>'
+            '<td style="vertical-align:middle;">'
+            '<p style="margin:0 0 5px;font-family:Georgia,Cambria,serif;'
+            'font-size:15px;color:#3D1020;font-weight:normal;">'
+            "Today&#39;s Code Challenge &#x1F4BB;"
+            "</p>"
+            f'<p style="margin:0;font-size:13px;color:#5C2A3A;">'
+            f'{_esc(challenge["company"])} &nbsp;&bull;&nbsp; {diff_badge}</p>'
+            "</td>"
+            '<td style="vertical-align:middle;text-align:right;white-space:nowrap;">'
+            f'<a href="{_esc(challenge["url"])}" '
+            'style="display:inline-block;background:#3B5BDB;color:#FFFFFF;text-decoration:none;'
+            'padding:10px 18px;border-radius:10px;font-weight:700;font-size:15px;">'
+            f'{_esc(challenge["title"])} &#8594;'
+            "</a>"
+            "</td>"
+            "</tr></table>"
+            "</div></div>"
+        )
+
         return (
             '<div style="padding:20px 32px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
             '<table style="width:100%;border-collapse:collapse;"><tr>'
             + bunny_card
             + listdle_card
             + "</tr></table></div>"
+            + challenge_card
         )
 
     except Exception:  # noqa: BLE001
