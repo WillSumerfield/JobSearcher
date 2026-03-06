@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 TEMPLATES_DIR = Path("templates")
 DOCUMENTS_DIR = Path("documents")
 
+_CLAUDE_CODE_VARS = {"CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT"}
+
+
+def _claude_env() -> dict:
+    """Return os.environ with all Claude Code session vars stripped so that a
+    subprocess `claude -p` call is not treated as a nested session."""
+    return {k: v for k, v in os.environ.items() if k not in _CLAUDE_CODE_VARS}
+
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -189,7 +197,7 @@ Return ONLY a valid JSON array (no markdown fences, no extra text):
 If no changes are needed, return: []"""
 
     try:
-        _env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        _env = _claude_env()
         result = subprocess.run(
             ["claude", "-p", prompt],
             capture_output=True, text=True, timeout=180, env=_env,
@@ -305,7 +313,7 @@ Output ONLY the letter body — plain text, paragraphs separated by blank lines.
 No markdown, no JSON, no explanation."""
 
     try:
-        _env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        _env = _claude_env()
         result = subprocess.run(
             ["claude", "-p", prompt],
             capture_output=True, text=True, timeout=180, env=_env,

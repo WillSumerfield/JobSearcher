@@ -27,6 +27,14 @@ from scraper.models import Job
 
 logger = logging.getLogger(__name__)
 
+_CLAUDE_CODE_VARS = {"CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT"}
+
+
+def _claude_env() -> dict:
+    """Return os.environ with all Claude Code session vars stripped."""
+    return {k: v for k, v in os.environ.items() if k not in _CLAUDE_CODE_VARS}
+
+
 # How many keyword-ranked jobs to forward to Claude for deep scoring.
 # Larger = better coverage but slower + more expensive per run.
 CLAUDE_SHORTLIST_SIZE = 40
@@ -227,7 +235,7 @@ def _claude_rank(jobs: list[Job], cfg: dict) -> dict[int, dict]:
     prompt = _build_prompt(jobs, cfg)
 
     logger.info("Sending %d jobs to Claude for ranking…", len(jobs))
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    env = _claude_env()
     claude_bin = _find_claude()
     result = subprocess.run(
         [claude_bin, "-p", prompt],
