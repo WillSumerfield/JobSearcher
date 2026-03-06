@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,22 @@ def _claude_env() -> dict:
     """Return os.environ with all Claude Code session vars stripped so that a
     subprocess `claude -p` call is not treated as a nested session."""
     return {k: v for k, v in os.environ.items() if k not in _CLAUDE_CODE_VARS}
+
+
+def _find_claude() -> str:
+    """Locate the claude CLI, expanding PATH to include common user-local dirs."""
+    extra = [
+        Path.home() / ".local" / "bin",
+        Path.home() / ".npm" / "bin",
+        Path("/usr/local/bin"),
+    ]
+    search_path = ":".join(str(p) for p in extra) + ":" + os.environ.get("PATH", "")
+    found = shutil.which("claude", path=search_path)
+    if not found:
+        raise FileNotFoundError(
+            "claude CLI not found. Searched PATH + ~/.local/bin, ~/.npm/bin, /usr/local/bin."
+        )
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +216,7 @@ If no changes are needed, return: []"""
     try:
         _env = _claude_env()
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            [_find_claude(), "-p", prompt],
             capture_output=True, text=True, timeout=180, env=_env,
         )
         if result.returncode != 0:
@@ -315,7 +332,7 @@ No markdown, no JSON, no explanation."""
     try:
         _env = _claude_env()
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            [_find_claude(), "-p", prompt],
             capture_output=True, text=True, timeout=180, env=_env,
         )
         if result.returncode != 0:
