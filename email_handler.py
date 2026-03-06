@@ -374,8 +374,8 @@ def _fetch_fun_block() -> str:
         )
 
         bunny_card = (
-            '<td rowspan="2" style="width:56%;padding-right:10px;vertical-align:top;">'
-            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;height:100%;">'
+            '<td style="width:56%;padding-right:10px;vertical-align:top;">'
+            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
             '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
             "Today&#39;s Runny Babbit &#x1F407;"
@@ -403,15 +403,14 @@ def _fetch_fun_block() -> str:
 
         icon_style = "vertical-align:middle;" if icon_html else "display:block;text-align:center;"
 
-        listdle_card = (
-            '<td style="width:44%;padding-left:10px;vertical-align:top;">'
-            '<div style="background:#FFF0F5;border-radius:14px;padding:16px;text-align:center;">'
+        listdle_div = (
+            '<div style="background:#F0FFF4;border-radius:14px;padding:16px;text-align:center;">'
             '<p style="margin:0 0 14px;font-family:Georgia,Cambria,serif;'
-            'font-size:15px;color:#3D1020;font-weight:normal;">'
+            'font-size:15px;color:#1B4332;font-weight:normal;">'
             "Today&#39;s Puzzle &#x1F9E9;"
             "</p>"
             f'<a href="{game_url}" '
-            'style="display:inline-block;background:#FFE4ED;color:#8A2040;text-decoration:none;'
+            'style="display:inline-block;background:#C8EAD3;color:#1B4332;text-decoration:none;'
             'padding:12px 20px;border-radius:10px;font-weight:700;font-size:17px;'
             'line-height:1;">'
             + icon_html +
@@ -419,15 +418,15 @@ def _fetch_fun_block() -> str:
             "</a>"
         )
         if game_desc:
-            listdle_card += (
-                f'<p style="margin:12px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
+            listdle_div += (
+                f'<p style="margin:12px 0 0;font-size:12.5px;color:#3D6B52;line-height:1.5;">'
                 f"{game_desc}</p>"
             )
-        listdle_card += (
-            '<p style="margin:10px 0 0;font-size:12.5px;color:#AA7888;line-height:1.5;">'
+        listdle_div += (
+            '<p style="margin:10px 0 0;font-size:12.5px;color:#3D6B52;line-height:1.5;">'
             "Don&#39;t forget to show me what score you get, cutie :3"
             "</p>"
-            "</div></td>"
+            "</div>"
         )
 
         # --- DataLemur challenge cell (second row, right column) ---
@@ -439,8 +438,7 @@ def _fetch_fun_block() -> str:
             f'padding:2px 9px;border-radius:99px;font-weight:700;font-size:12px;">'
             f'{_esc(diff)}</span>'
         )
-        challenge_cell = (
-            '<td style="width:44%;padding-left:10px;vertical-align:top;">'
+        challenge_div = (
             '<div style="background:#EEF2FF;border-radius:14px;padding:16px;text-align:center;">'
             '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
@@ -454,19 +452,24 @@ def _fetch_fun_block() -> str:
             "</a>"
             f'<p style="margin:10px 0 0;font-size:12.5px;color:#AA7888;">'
             f'{_esc(challenge["company"])} &nbsp;&bull;&nbsp; {diff_badge}</p>'
-            "</div></td>"
+            "</div>"
+        )
+
+        right_col = (
+            '<td style="width:44%;padding-left:10px;vertical-align:top;">'
+            '<table style="width:100%;border-collapse:collapse;">'
+            "<tr><td>" + listdle_div + "</td></tr>"
+            '<tr><td style="padding-top:10px;">' + challenge_div + "</td></tr>"
+            "</table>"
+            "</td>"
         )
 
         return (
             '<div style="padding:20px 32px;background:#FFF5F8;border-bottom:1px solid #FFE4ED;">'
-            '<table style="width:100%;border-collapse:collapse;">'
-            "<tr>"
+            '<table style="width:100%;border-collapse:collapse;"><tr>'
             + bunny_card
-            + listdle_card
-            + "</tr><tr>"
-            + challenge_cell
-            + "</tr>"
-            "</table></div>"
+            + right_col
+            + "</tr></table></div>"
         )
 
     except Exception:  # noqa: BLE001
