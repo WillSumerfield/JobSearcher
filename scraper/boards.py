@@ -63,10 +63,12 @@ def _salary_from_description(description: str) -> tuple[float | None, float | No
         if not lo_raw:
             continue
         lo = _parse_gbp(lo_raw)
-        hi = _parse_gbp(hi_raw) if hi_raw else lo
+        hi = _parse_gbp(hi_raw) if hi_raw else None
         # Sanity-check: plausible annual UK salary
-        if 10_000 <= lo <= 500_000 and 10_000 <= hi <= 500_000:
-            return (lo, hi) if lo <= hi else (hi, lo)
+        if 10_000 <= lo <= 500_000 and (hi is None or 10_000 <= hi <= 500_000):
+            if hi is not None:
+                return (lo, hi) if lo <= hi else (hi, lo)
+            return lo, None
     return None, None
 
 
