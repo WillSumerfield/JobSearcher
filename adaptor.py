@@ -201,9 +201,8 @@ If no changes are needed, return: []"""
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
         return data if isinstance(data, list) else []
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Resume Claude call failed (%s) — no changes applied.", exc)
-        return []
+    except Exception as exc:
+        raise RuntimeError(f"Claude CLI failed during resume tailoring: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -314,15 +313,8 @@ No markdown, no JSON, no explanation."""
         if result.returncode != 0:
             raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()}")
         return result.stdout.strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Cover letter Claude call failed (%s) — using fallback.", exc)
-        return (
-            f"Dear Hiring Manager,\n\n"
-            f"I am writing to apply for the {job_title} position at {job_company}.\n\n"
-            f"{experience}\n\n"
-            f"I would welcome the opportunity to discuss my application further.\n\n"
-            f"Yours sincerely,\n{name}"
-        )
+    except Exception as exc:
+        raise RuntimeError(f"Claude CLI failed during cover letter tailoring: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
