@@ -477,8 +477,75 @@ def _fetch_fun_block() -> str:
         return ""
 
 
+def _build_weekly_section(weekly_jobs: list[dict]) -> str:
+    """
+    Build a 'Top Picks This Week' HTML section from the weekly_jobs list.
+    Each entry is a dict with keys: job (dict), score (float), reason (str).
+    """
+    from datetime import timedelta
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    friday = monday + timedelta(days=4)
+    week_range = (
+        f"{monday.day}{_ordinal_suffix(monday.day)}"
+        f"&ndash;{friday.day}{_ordinal_suffix(friday.day)} {friday.strftime('%B %Y')}"
+    )
+
+    header = (
+        '<div style="margin:0 20px 0;border-top:2px solid #F8C0D0;">'
+        '<div style="background:#FFE4ED;padding:20px 32px 14px;">'
+        '<div style="font-family:Georgia,Cambria,\'Times New Roman\',serif;'
+        'font-size:22px;font-weight:normal;color:#3D1020;letter-spacing:-0.2px;">'
+        '&#9733; Your Top Picks This Week'
+        '</div>'
+        f'<div style="margin-top:5px;font-size:15px;color:#AA7888;">Week of {week_range}</div>'
+        '</div>'
+        '<div style="padding:8px 20px 20px;">'
+        '<table style="border-collapse:collapse;width:100%;font-size:13.5px;margin-top:12px;">'
+        '<thead>'
+        '<tr style="background:#F8CAD8;color:#3D1020;text-align:left;">'
+        '<th style="padding:10px 10px;font-weight:600;">#</th>'
+        '<th style="padding:10px 10px;font-weight:600;">Title</th>'
+        '<th style="padding:10px 10px;font-weight:600;">Company</th>'
+        '<th style="padding:10px 10px;font-weight:600;">Location</th>'
+        '<th style="padding:10px 10px;font-weight:600;">Salary</th>'
+        '<th style="padding:10px 10px;font-weight:600;text-align:center;">Fit</th>'
+        '<th style="padding:10px 10px;font-weight:600;">Notes</th>'
+        '</tr></thead><tbody>'
+    )
+
+    rows = []
+    for i, item in enumerate(weekly_jobs, start=1):
+        j = item["job"]
+        bg = "#FFF5F8" if i % 2 == 0 else "#FFFFFF"
+        salary_parts = []
+        if j.get("salary_min") and j.get("salary_max"):
+            salary_parts.append(f"£{int(j['salary_min']):,}–£{int(j['salary_max']):,}")
+        elif j.get("salary_min"):
+            salary_parts.append(f"£{int(j['salary_min']):,}+")
+        salary_str = salary_parts[0] if salary_parts else "—"
+        rows.append(
+            f'<tr style="background:{bg};border-bottom:1px solid #FFE4ED;">'
+            f'<td style="padding:9px 10px;font-weight:700;color:#C4607A;font-size:14px;">{i}</td>'
+            f'<td style="padding:9px 10px;font-weight:600;color:#3D1020;">'
+            f'<a href="{_esc(j.get("url",""))}" style="color:#3D1020;text-decoration:none;">'
+            f'{_esc(j.get("title",""))}</a></td>'
+            f'<td style="padding:9px 10px;color:#5C2A3A;">{_esc(j.get("company",""))}</td>'
+            f'<td style="padding:9px 10px;color:#AA7888;font-size:13px;">'
+            f'{_esc(j.get("location","") or "—")}</td>'
+            f'<td style="padding:9px 10px;color:#AA7888;font-size:13px;">{_esc(salary_str)}</td>'
+            f'<td style="padding:9px 10px;text-align:center;">{_score_badge(item["score"])}</td>'
+            f'<td style="padding:9px 10px;font-style:italic;color:#AA7888;font-size:12.5px;">'
+            f'{_esc(item.get("reason",""))}</td>'
+            f'</tr>'
+        )
+
+    footer = '</tbody></table></div></div>'
+    return header + "".join(rows) + footer
+
+
 def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = "",
-                has_icon: bool = False) -> str:
+                has_icon: bool = False, weekly_block: str = "") -> str:
     rows = []
     for i, sj in enumerate(scored_jobs, start=1):
         bg = "#FFF5F8" if i % 2 == 0 else "#FFFFFF"
@@ -498,14 +565,20 @@ def _build_html(scored_jobs: list[ScoredJob], date_str: str, intro_block: str = 
                 if has_icon else "View &#8594;"
             ),
         ))
+    footer = _HTML_FOOTER.format(count=len(scored_jobs))
+    if weekly_block:
+        # Insert the weekly section just before the closing outer </div>
+        footer = footer.replace("\n</div>\n</body></html>",
+                                "\n" + weekly_block + "\n</div>\n</body></html>", 1)
     return (
         _HTML_HEADER.format(date=date_str, intro_block=intro_block)
         + "".join(rows)
-        + _HTML_FOOTER.format(count=len(scored_jobs))
+        + footer
     )
 
 
-def _build_plain(scored_jobs: list[ScoredJob], date_str: str) -> str:
+def _build_plain(scored_jobs: list[ScoredJob], date_str: str,
+                 weekly_jobs: list[dict] | None = None) -> str:
     lines = [f"Today's Job Matches — {date_str}", "=" * 40, "",
              "Reply with numbers to apply, e.g: 1, 3, 7", ""]
     for i, sj in enumerate(scored_jobs, start=1):
@@ -516,6 +589,17 @@ def _build_plain(scored_jobs: list[ScoredJob], date_str: str) -> str:
             lines.append(f"      {sj.reason}")
         lines.append(f"      {sj.job.url}")
         lines.append("")
+    if weekly_jobs:
+        lines += ["", "Your Top Picks This Week", "=" * 40, ""]
+        for i, item in enumerate(weekly_jobs, start=1):
+            j = item["job"]
+            score_disp = f"{int(item['score'])}" if item.get("score") else "—"
+            lines.append(f"{i:>3}.  {j.get('title','')} @ {j.get('company','')}")
+            lines.append(f"      {j.get('location','') or '—'} | Score: {score_disp}")
+            if item.get("reason"):
+                lines.append(f"      {item['reason']}")
+            lines.append(f"      {j.get('url','')}")
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -541,7 +625,12 @@ def _smtp_send(sender: str, password: str, to: str, msg) -> None:
 # SMTP sending
 # ---------------------------------------------------------------------------
 
-def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = None) -> None:
+def send_digest(
+    cfg: dict,
+    scored_jobs: list[ScoredJob],
+    date_str: str | None = None,
+    weekly_jobs: list[dict] | None = None,
+) -> None:
     """
     Send the job digest FROM the bot account TO the user's personal address.
 
@@ -549,6 +638,7 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
         cfg:          Parsed profile.yaml.
         scored_jobs:  Ranked job list from scorer.py.
         date_str:     Date string for the subject line; defaults to today.
+        weekly_jobs:  If provided (Fridays), appended as a 'Top Picks This Week' section.
     """
     if date_str is None:
         date_str = _format_date_written(date.today())
@@ -560,6 +650,7 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     subject = f"{DIGEST_SUBJECT_PREFIX} — {date_str}"
 
     intro_block = _fetch_fun_block()
+    weekly_block = _build_weekly_section(weekly_jobs) if weekly_jobs else ""
 
     # Load icon for CID inline embedding (None if file is missing).
     try:
@@ -571,9 +662,11 @@ def send_digest(cfg: dict, scored_jobs: list[ScoredJob], date_str: str | None = 
     # resolve cid:link_icon references inside the HTML part.
     related = MIMEMultipart("related")
     alternative = MIMEMultipart("alternative")
-    alternative.attach(MIMEText(_build_plain(jobs_to_send, date_str), "plain", "utf-8"))
+    alternative.attach(MIMEText(_build_plain(jobs_to_send, date_str, weekly_jobs=weekly_jobs),
+                                "plain", "utf-8"))
     alternative.attach(MIMEText(
-        _build_html(jobs_to_send, date_str, intro_block=intro_block, has_icon=icon_data is not None),
+        _build_html(jobs_to_send, date_str, intro_block=intro_block,
+                    has_icon=icon_data is not None, weekly_block=weekly_block),
         "html", "utf-8",
     ))
     related.attach(alternative)

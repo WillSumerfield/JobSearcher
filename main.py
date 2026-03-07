@@ -135,7 +135,8 @@ def cmd_scrape(limit: int | None) -> None:
         held_over  = [sj for sj in scored[send_top_n:] if sj.score > 0]
 
         db.mark_seen_bulk(sent_jobs + junk_jobs)
-        db.save_digest(today, [sj.job for sj in scored])
+        db.save_digest(today, scored)
+        weekly_jobs = db.get_week_top_jobs(15) if date.today().weekday() == 4 else []
 
         if held_over:
             console.print(
@@ -146,7 +147,7 @@ def cmd_scrape(limit: int | None) -> None:
     # Send email digest
     try:
         console.print("[dim]Sending digest email…[/]")
-        send_digest(cfg, scored)
+        send_digest(cfg, scored, weekly_jobs=weekly_jobs or None)
         console.print("[bold green]Digest email sent.[/]")
     except KeyError as exc:
         console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")

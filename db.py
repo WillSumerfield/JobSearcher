@@ -15,9 +15,11 @@ Usage:
     new_jobs = [j for j in scraped if not db.is_seen(j.id)]
     for job in new_jobs:
         db.mark_seen(job.id, job.source)
-    db.save_digest("2026-03-03", new_jobs)
+    db.save_digest("2026-03-03", scored_jobs)
     job_dict = db.get_digest_job(3)
 """
+
+from __future__ import annotations
 
 import dataclasses
 import json
@@ -25,9 +27,12 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from scraper.models import Job
+
+if TYPE_CHECKING:
+    from scorer import ScoredJob
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,8 @@ CREATE TABLE IF NOT EXISTS digest_jobs (
     idx          INTEGER NOT NULL, -- 1-based index shown in the email
     job_id       TEXT NOT NULL,
     job_json     TEXT NOT NULL,    -- full Job serialised as JSON
+    score        REAL NOT NULL DEFAULT 0,
+    reason       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (digest_date, idx)
 );
 """
@@ -70,6 +77,13 @@ class Database:
         with self._conn:
             self._conn.execute(_CREATE_SEEN_JOBS)
             self._conn.execute(_CREATE_DIGEST_JOBS)
+            # Migrate existing DBs that pre-date the score/reason columns.
+            for col, defn in [("score", "REAL NOT NULL DEFAULT 0"),
+                               ("reason", "TEXT NOT NULL DEFAULT ''")]:
+                try:
+                    self._conn.execute(f"ALTER TABLE digest_jobs ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
 
     def close(self) -> None:
         self._conn.close()
@@ -131,7 +145,7 @@ class Database:
     # digest_jobs
     # ------------------------------------------------------------------
 
-    def save_digest(self, digest_date: str, jobs: list[Job]) -> None:
+    def save_digest(self, digest_date: str, scored_jobs: list[ScoredJob]) -> None:
         """
         Persist today's ranked job list so the daemon can map email reply
         indices back to full job objects.
@@ -143,15 +157,15 @@ class Database:
                 "DELETE FROM digest_jobs WHERE digest_date = ?", (digest_date,)
             )
             rows = [
-                (digest_date, idx, job.id, _job_to_json(job))
-                for idx, job in enumerate(jobs, start=1)
+                (digest_date, idx, sj.job.id, _job_to_json(sj.job), sj.score, sj.reason)
+                for idx, sj in enumerate(scored_jobs, start=1)
             ]
             self._conn.executemany(
-                "INSERT INTO digest_jobs (digest_date, idx, job_id, job_json) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO digest_jobs (digest_date, idx, job_id, job_json, score, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 rows,
             )
-        logger.info("save_digest: stored %d jobs for %s", len(jobs), digest_date)
+        logger.info("save_digest: stored %d jobs for %s", len(scored_jobs), digest_date)
 
     def get_digest_job(self, index: int, digest_date: Optional[str] = None) -> Optional[dict]:
         """
@@ -182,6 +196,32 @@ class Database:
             "SELECT digest_date FROM digest_jobs ORDER BY digest_date DESC LIMIT 1"
         ).fetchone()
         return row["digest_date"] if row else None
+
+    def get_week_top_jobs(self, n: int = 15) -> list[dict]:
+        """
+        Return the top n jobs (by score desc) across the last 7 digest dates,
+        de-duplicated by job_id, as dicts with keys: job (dict), score, reason.
+        """
+        cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+        rows = self._conn.execute(
+            "SELECT job_id, job_json, score, reason FROM digest_jobs "
+            "WHERE digest_date >= ? ORDER BY score DESC",
+            (cutoff,),
+        ).fetchall()
+        seen: set[str] = set()
+        result: list[dict] = []
+        for row in rows:
+            if row["job_id"] in seen:
+                continue
+            seen.add(row["job_id"])
+            result.append({
+                "job": json.loads(row["job_json"]),
+                "score": row["score"],
+                "reason": row["reason"],
+            })
+            if len(result) >= n:
+                break
+        return result
 
 
 # ------------------------------------------------------------------

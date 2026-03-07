@@ -12,6 +12,7 @@ relevant skills).  The cover letter body is fully replaced with a fresh draft
 while the header / contact block is preserved.
 """
 
+import html
 import json
 import logging
 import os
@@ -192,18 +193,19 @@ CURRENT RESUME (paragraph index: text)
 {numbered}
 
 RULES
-1. ONLY modify the profile/summary paragraph and the skills list. Do not touch \
+1. ONLY modify the Summary paragraph and the skills list. Do not touch \
    any other section.
 2. Do NOT change: the applicant's name, contact details, section headers (e.g. \
    "Experience", "Education", "Skills"), job titles, company names, or dates.
 3. Keep changes minimal and subtle — preserve the original wording, style, and \
    length as closely as possible. Only lightly adjust emphasis to reflect the \
    role's focus areas.
-4. CRITICAL: Each rewritten paragraph must be the same length or shorter than the \
-   original (same word count or fewer). The resume must remain exactly one page — \
-   do not add words or expand sentences.
-5. Do not keyword-stuff. Changes should read naturally and not look AI-generated.
-6. If the existing text already fits the role well, return [].
+4. CRITICAL: The summary must be no more than a few words longer than the original.
+5. The skills list should be rephrased to better match the job description's language and highlight relevant skills,
+    but should not be significantly longer than the original list.
+6. Do not keyword-stuff or directly copy the job listing. Never use em-dashes (--). \
+    Changes should read naturally and not look AI-generated.
+7. If the existing text already fits the role well, return [].
 
 Return ONLY a valid JSON array (no markdown fences, no extra text):
 [
@@ -255,19 +257,22 @@ def _tailor_cover_letter(src: Path, dst: Path, job_dict: dict, cfg: dict) -> Non
         logger.warning("Cover letter template has no 'Dear' salutation — rewriting from start.")
 
     # Extract current body text for style reference
-    current_body = "\n".join(p.text for p in paras[body_start:])
+    current_body = "\n\n".join(p.text for p in paras[body_start:])
+
+    # Capture body style before removing elements
+    body_style = paras[body_start].style
 
     new_body_text = _get_cover_letter_text(current_body, job_dict, cfg)
-    new_lines = new_body_text.splitlines()  # preserves blank lines as empty strings
 
     # Remove all existing body paragraphs from the XML tree
     body_para_elements = [p._element for p in paras[body_start:]]
     for el in body_para_elements:
         el.getparent().remove(el)
 
-    # Append new paragraphs to the document body
-    for line in new_lines:
-        doc.add_paragraph(line)
+    # Split on blank lines — one Word paragraph per Claude paragraph, no empty paragraphs
+    new_paras = [chunk.strip() for chunk in new_body_text.split("\n\n") if chunk.strip()]
+    for chunk in new_paras:
+        doc.add_paragraph(chunk.replace("\n", " "), style=body_style)
 
     doc.save(dst)
     logger.info("Cover letter saved → %s", dst)
@@ -312,7 +317,7 @@ Education:  {education}
 Experience: {experience}
 
 EXISTING COVER LETTER (edit this — do not discard it):
-{current_body[:800]}
+{html.unescape(current_body)}
 
 INSTRUCTIONS
 Return a lightly edited version of the existing cover letter body. Rules:
@@ -324,7 +329,9 @@ Return a lightly edited version of the existing cover letter body. Rules:
    one or two specific, well-placed references are enough.
 5. Keep all concrete details (numbers, technologies, outcomes) from the original.
 6. Maintain the original salutation and sign-off format.
-7. If the existing letter already fits the role well, return it unchanged.
+7. Do not keyword-stuff or directly copy the job listing. Never use em-dashes (--). \
+    Changes should read naturally and not look AI-generated.
+8. If the existing letter already fits the role well, return it unchanged.
 
 Output ONLY the letter body — plain text, paragraphs separated by blank lines.
 No markdown, no JSON, no explanation."""
