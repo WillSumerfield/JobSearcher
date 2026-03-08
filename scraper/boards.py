@@ -7,13 +7,14 @@ Usage:
     jobs = scrape_boards(cfg)      # cfg = parsed profile.yaml dict
 """
 
+import json
 import logging
 import re
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, parse_qs, unquote, urlparse
 
 import pandas as pd
 import requests
@@ -407,7 +408,7 @@ def scrape_boards(cfg: dict) -> list[Job]:
 
 
 # ---------------------------------------------------------------------------
-# Description enrichment — follow job URLs to fetch full posting text
+# Description and salary enrichment — follow job URLs to fetch full data
 # ---------------------------------------------------------------------------
 
 _ENRICH_UA = (
@@ -415,61 +416,87 @@ _ENRICH_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/122.0.0.0 Safari/537.36"
 )
-# Tags whose content we strip before extracting body text
+# Tags whose content we strip before extracting body text in the description fallback
 _STRIP_TAGS = {"script", "style", "nav", "header", "footer", "aside", "noscript"}
 
-# Description length below which we bother fetching the full page
+# Description length below which we fetch the full page for description enrichment
 _ENRICH_THRESHOLD = 500
 
-# Minimum seconds between successive requests to a given domain during enrich.
-# LinkedIn is aggressive about rate-limiting anonymous fetches.
+# Minimum seconds between successive requests to a given domain
 _DOMAIN_DELAYS: dict[str, float] = {
     "linkedin.com": 3.0,  # ~20 req/min max
 }
 _DEFAULT_DOMAIN_DELAY = 0.5
 
+# Known ATS domains — used to identify external apply links
+_ATS_DOMAINS = frozenset({
+    "greenhouse.io", "lever.co", "jobs.lever.co", "haystackapp.io",
+    "workday.com", "myworkdayjobs.com", "ashbyhq.com", "smartrecruiters.com",
+    "taleo.net", "icims.com", "successfactors.com", "bamboohr.com",
+    "recruitee.com", "teamtailor.com", "pinpointhq.com",
+})
 
-def _fetch_full_description(job: Job) -> str | None:
+# Matches embedded JSON salary data (e.g. Apollo/GraphQL state):
+# looks for "currency":"GBP" then "min":<digits> within 300 chars
+_JSON_SAL_RE = re.compile(
+    r'"[Cc]urrency"\s*:\s*"GBP".{0,300}"(?:min|minimum|minValue|salary_min)"\s*:\s*(\d{4,6})',
+    re.DOTALL,
+)
+# Matches the max salary figure that follows a min match
+_JSON_SAL_MAX_RE = re.compile(
+    r'"(?:max|maximum|maxValue|salary_max)"\s*:\s*(\d{4,6})',
+)
+
+
+def _fetch_page(url: str) -> tuple[BeautifulSoup, str] | None:
     """
-    Fetch job.url and return the full description text, or None on failure.
-
-    Tries board-specific CSS selectors first, then falls back to stripping
-    all navigational chrome and returning the remaining body text.
+    Fetch a URL (with 429 retries) and return (soup, raw_html), or None on failure.
     """
     _MAX_RETRIES = 2
+    resp = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
             resp = requests.get(
-                job.url,
+                url,
                 timeout=12,
                 headers={"User-Agent": _ENRICH_UA},
                 allow_redirects=True,
             )
             if resp.status_code == 429:
                 if attempt < _MAX_RETRIES:
-                    wait = 5 * (2 ** attempt)  # 5s, then 10s
+                    wait = 5 * (2 ** attempt)  # 5s, 10s
                     logger.warning(
-                        "enrich: %s rate-limited (429), retrying in %ds… (attempt %d/%d)",
-                        job.url, wait, attempt + 1, _MAX_RETRIES,
+                        "enrich: rate-limited (429) fetching %s, retrying in %ds… (%d/%d)",
+                        url, wait, attempt + 1, _MAX_RETRIES,
                     )
                     time.sleep(wait)
                     continue
-                logger.warning("enrich: %s blocked (429) after %d retries", job.url, _MAX_RETRIES)
+                logger.warning("enrich: blocked (429) after %d retries: %s", _MAX_RETRIES, url)
                 return None
             if resp.status_code == 403:
-                logger.warning("enrich: %s blocked (403) for %s", job.url, job.source)
+                logger.warning("enrich: blocked (403): %s", url)
                 return None
             resp.raise_for_status()
             break
         except Exception as exc:  # noqa: BLE001
-            logger.warning("enrich: failed to fetch %s — %s", job.url, exc)
+            logger.warning("enrich: failed to fetch %s — %s", url, exc)
             return None
+    if resp is None:
+        return None
+    raw = resp.text
+    return BeautifulSoup(raw, "html.parser"), raw
 
-    soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Board-specific selectors (higher quality)
+def _description_from_soup(soup: BeautifulSoup, job_url: str) -> str | None:
+    """
+    Extract job description text from a pre-fetched soup.
+    Tries board-specific CSS selectors first, then falls back to stripped body text.
+
+    NOTE: the body fallback decomposes script/style tags from the soup in place.
+    Always call _salary_from_soup BEFORE this function.
+    """
+    host = urlparse(job_url).netloc.lower()
     selectors: list[str] = []
-    host = urlparse(job.url).netloc.lower()
     if "linkedin.com" in host:
         selectors = [
             "div.description__text",
@@ -486,47 +513,188 @@ def _fetch_full_description(job: Job) -> str | None:
             if len(text) > 200:
                 return text
 
-    # Fallback: strip chrome, return body text
+    # Fallback: strip chrome and return body text (mutates soup)
     for tag in soup.find_all(_STRIP_TAGS):
         tag.decompose()
     body = soup.find("body")
     if body:
         text = body.get_text(separator=" ", strip=True)
-        # Collapse runs of whitespace
         text = re.sub(r"\s{2,}", " ", text).strip()
         return text if len(text) > 200 else None
     return None
 
 
+def _salary_from_soup(soup: BeautifulSoup, raw_html: str) -> tuple[float | None, float | None]:
+    """
+    Extract a GBP salary from a fetched page. Tries in order:
+      1. JSON-LD <script type="application/ld+json"> baseSalary (JobPosting schema)
+      2. Embedded <script> JSON blobs with "currency":"GBP" + min/max (Apollo/GraphQL)
+      3. <meta name="description"> / og:description / twitter:description text
+      4. Full body text
+
+    Call this BEFORE _description_from_soup, which strips script tags from the soup.
+    """
+    # 1. JSON-LD baseSalary
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict) or item.get("@type") != "JobPosting":
+                    continue
+                sal = item.get("baseSalary") or {}
+                val = sal.get("value") or {}
+                currency = (sal.get("currency") or "").upper()
+                if currency and currency != "GBP":
+                    continue
+                lo = _safe_float(val.get("minValue"))
+                hi = _safe_float(val.get("maxValue"))
+                single = _safe_float(val.get("value"))
+                if lo and hi and 10_000 <= lo <= 500_000 and 10_000 <= hi <= 500_000:
+                    return (lo, hi) if lo <= hi else (hi, lo)
+                if lo and 10_000 <= lo <= 500_000:
+                    return lo, None
+                if single and 10_000 <= single <= 500_000:
+                    return single, None
+        except Exception:  # noqa: BLE001
+            continue
+
+    # 2. Embedded script JSON (Apollo/GraphQL state, etc.)
+    for script in soup.find_all("script"):
+        if script.get("type") == "application/ld+json":
+            continue
+        text = script.string or ""
+        if "GBP" not in text:
+            continue
+        m = _JSON_SAL_RE.search(text)
+        if m:
+            lo = _safe_float(m.group(1))
+            mx = _JSON_SAL_MAX_RE.search(text[m.start(): m.start() + 400])
+            hi = _safe_float(mx.group(1)) if mx else None
+            if lo and 10_000 <= lo <= 500_000:
+                if hi and 10_000 <= hi <= 500_000:
+                    return (lo, hi) if lo <= hi else (hi, lo)
+                return lo, None
+
+    # 3. Meta description tags
+    for attrs in (
+        {"name": "description"},
+        {"property": "og:description"},
+        {"name": "twitter:description"},
+    ):
+        meta = soup.find("meta", attrs)
+        if meta:
+            content = meta.get("content") or ""
+            if content:
+                lo, hi = _salary_from_description(content)
+                if lo or hi:
+                    return lo, hi
+
+    # 4. Body text
+    body = soup.find("body")
+    if body:
+        return _salary_from_description(body.get_text(separator=" ", strip=True))
+    return None, None
+
+
+def _find_apply_url(soup: BeautifulSoup, job_url: str) -> str | None:
+    """
+    Find the external apply/application URL from a job page.
+
+    For LinkedIn, decodes the destination from externalApply redirect hrefs.
+    For other pages, checks for links to known ATS domains, then falls back
+    to any external <a> with "apply" in its text, href, or aria-label.
+
+    Returns None if no suitable external link is found.
+    """
+    base_domain = urlparse(job_url).netloc.lower()
+
+    # LinkedIn: externalApply links encode the real destination in a `url=` param
+    if "linkedin.com" in base_domain:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "externalApply" in href or "job-apply" in href:
+                full = urljoin(job_url, href)
+                qs = parse_qs(urlparse(full).query)
+                if "url" in qs:
+                    decoded = unquote(qs["url"][0])
+                    if decoded.startswith("http"):
+                        return decoded
+                if urlparse(full).netloc != base_domain:
+                    return full
+
+    # Known ATS domains — most reliable signal
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href or href.startswith("#") or href.startswith("mailto:"):
+            continue
+        full = urljoin(job_url, href)
+        link_domain = urlparse(full).netloc.lower()
+        if link_domain == base_domain:
+            continue
+        if any(ats in link_domain for ats in _ATS_DOMAINS):
+            return full
+
+    # Generic fallback: external <a> with "apply" in text, href, or aria-label
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href or href.startswith("#") or href.startswith("mailto:"):
+            continue
+        full = urljoin(job_url, href)
+        link_domain = urlparse(full).netloc.lower()
+        if link_domain == base_domain:
+            continue
+        text = a.get_text(strip=True).lower()
+        aria = (a.get("aria-label") or "").lower()
+        if "apply" in href.lower() or "apply" in text or "apply" in aria:
+            return full
+
+    return None
+
+
 def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
     """
-    Fetch full job descriptions in parallel for jobs whose description is
-    shorter than _ENRICH_THRESHOLD characters.  Mutates job.description in place.
+    Fetch full job descriptions and salary data in parallel. Mutates jobs in place.
 
-    Jobs that already have a long description are skipped.
-    Any fetch failure is logged as a warning; the original description is kept.
-    A polite per-domain delay (0.5 s) is applied to avoid hammering a single host.
+    Description enrichment: jobs whose description is shorter than _ENRICH_THRESHOLD.
+    Salary enrichment: jobs with no salary (both salary_min and salary_max are None).
+      - Primary pass: fetch job.url, extract salary from JSON-LD / embedded JSON /
+        meta tags / body text.
+      - Secondary pass: for jobs still without salary, follow the external apply link
+        (e.g. Greenhouse, Lever, Haystack) and repeat salary extraction there.
+
+    Important: salary extraction runs before description extraction per job, because
+    _description_from_soup's body fallback strips script tags from the soup in place.
     """
-    to_enrich = [j for j in jobs if len(j.description or "") < _ENRICH_THRESHOLD]
-    if not to_enrich:
-        logger.info("enrich: all descriptions already sufficient — skipping fetch.")
+    import threading
+
+    needs_desc = {j for j in jobs if len(j.description or "") < _ENRICH_THRESHOLD}
+    needs_salary = {j for j in jobs if j.salary_min is None and j.salary_max is None}
+    to_fetch = needs_desc | needs_salary
+
+    if not to_fetch:
+        logger.info("enrich: all jobs already have sufficient descriptions and salary data.")
         return
 
-    logger.info("enrich: fetching full descriptions for %d/%d jobs…", len(to_enrich), len(jobs))
+    logger.info(
+        "enrich: fetching %d job page(s) (%d need description, %d need salary)…",
+        len(to_fetch), len(needs_desc), len(needs_salary),
+    )
 
-    # Track last-request time per domain for polite throttling
+    # Per-domain throttling shared across both fetch passes
     domain_last_hit: dict[str, float] = {}
-    domain_lock_map: dict[str, object] = {}
-    import threading
+    domain_lock_map: dict[str, threading.Lock] = {}
     global_lock = threading.Lock()
 
-    def _throttled_fetch(job: Job) -> tuple[Job, str | None]:
-        host = urlparse(job.url).netloc.lower()
+    def _get_domain_lock(host: str) -> threading.Lock:
         with global_lock:
             if host not in domain_lock_map:
                 domain_lock_map[host] = threading.Lock()
-        domain_lock = domain_lock_map[host]
-        with domain_lock:
+        return domain_lock_map[host]
+
+    def _throttled_get(url: str) -> tuple[BeautifulSoup, str] | None:
+        host = urlparse(url).netloc.lower()
+        with _get_domain_lock(host):
             now = time.monotonic()
             gap = now - domain_last_hit.get(host, 0)
             delay = next(
@@ -536,20 +704,72 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
             if gap < delay:
                 time.sleep(delay - gap)
             domain_last_hit[host] = time.monotonic()
-        return job, _fetch_full_description(job)
+        return _fetch_page(url)
 
-    enriched = skipped = 0
+    def _fetch_primary(job: Job) -> tuple[Job, tuple[BeautifulSoup, str] | None]:
+        return job, _throttled_get(job.url)
+
+    desc_enriched = salary_enriched = 0
+    needs_apply_fetch: list[tuple[Job, BeautifulSoup, str]] = []
+
+    # First pass: fetch each job's primary URL
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(_throttled_fetch, job): job for job in to_enrich}
+        futures = {pool.submit(_fetch_primary, job): job for job in to_fetch}
         for future in as_completed(futures):
-            job, text = future.result()
-            if text and len(text) > len(job.description or ""):
-                job.description = text
-                enriched += 1
+            job, result = future.result()
+            if result is None:
+                continue
+            soup, raw = result
+
+            # Salary before description — _description_from_soup may strip script tags
+            if job in needs_salary:
+                lo, hi = _salary_from_soup(soup, raw)
+                if lo or hi:
+                    job.salary_min, job.salary_max = lo, hi
+                    salary_enriched += 1
+                else:
+                    needs_apply_fetch.append((job, soup, raw))
+
+            if job in needs_desc:
+                text = _description_from_soup(soup, job.url)
+                if text and len(text) > len(job.description or ""):
+                    job.description = text
+                    desc_enriched += 1
+
+    # Second pass: follow external apply links for jobs still without salary
+    if needs_apply_fetch:
+        logger.info(
+            "enrich: following apply links for %d job(s) still missing salary…",
+            len(needs_apply_fetch),
+        )
+        apply_targets: list[tuple[Job, str]] = []
+        for job, soup, raw in needs_apply_fetch:
+            apply_url = _find_apply_url(soup, job.url)
+            if apply_url:
+                apply_targets.append((job, apply_url))
+                logger.debug(
+                    "enrich: apply URL for '%s' @ %s → %s", job.title, job.company, apply_url
+                )
             else:
-                skipped += 1
+                logger.debug("enrich: no apply URL found for '%s' @ %s", job.title, job.company)
+
+        def _fetch_apply(args: tuple[Job, str]) -> tuple[Job, tuple[BeautifulSoup, str] | None]:
+            job, url = args
+            return job, _throttled_get(url)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_fetch_apply, item): item for item in apply_targets}
+            for future in as_completed(futures):
+                job, result = future.result()
+                if result is None:
+                    continue
+                soup, raw = result
+                lo, hi = _salary_from_soup(soup, raw)
+                if lo or hi:
+                    job.salary_min, job.salary_max = lo, hi
+                    salary_enriched += 1
 
     logger.info(
-        "enrich: done — %d enriched, %d unchanged (fetch failed or no improvement).",
-        enriched, skipped,
+        "enrich: done — %d description(s) enriched, %d salary/ies resolved.",
+        desc_enriched, salary_enriched,
     )
