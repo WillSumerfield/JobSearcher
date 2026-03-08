@@ -9,6 +9,7 @@ Usage:
 
 import json
 import logging
+import os
 import re
 import time
 import warnings
@@ -180,8 +181,8 @@ def _apply_filters(jobs: list[Job], cfg: dict) -> list[Job]:
 # Welcome to the Jungle (Algolia)
 # ---------------------------------------------------------------------------
 
-_WTTJ_APP_ID = "***REMOVED***"
-_WTTJ_API_KEY = "***REMOVED***"
+_WTTJ_APP_ID = os.environ["WTTJ_APP_ID"]
+_WTTJ_API_KEY = os.environ["WTTJ_API_KEY"]
 _WTTJ_INDEX = "wttj_jobs_production_en"
 _WTTJ_HEADERS = {
     "X-Algolia-Application-Id": _WTTJ_APP_ID,
