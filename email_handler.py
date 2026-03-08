@@ -147,7 +147,7 @@ _HTML_FOOTER = """\
   <!-- Footer -->
   <div style="padding:16px 32px 24px;text-align:center;border-top:1px solid #FFE4ED;">
     <span style="color:#C8A0AC;font-size:12px;">
-      Good luck Rach - you've got this &#10024;
+      Good luck, you've got this &#10024;
       &nbsp;&bull;&nbsp; JobSearcher &bull; {count} new listing(s)
     </span>
   </div>
@@ -378,7 +378,7 @@ def _fetch_fun_block() -> str:
             '<div style="background:#FFF0F5;border-radius:14px;padding:16px;">'
             '<p style="margin:0 0 10px;font-family:Georgia,Cambria,serif;'
             'font-size:15px;color:#3D1020;font-weight:normal;">'
-            "Today&#39;s Runny Babbit &#x1F407;"
+            "Today&#39;s Motivational Rabbit &#x1F407;"
             "</p>"
             + media_html
             + "</div></td>"
