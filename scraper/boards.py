@@ -524,13 +524,18 @@ def _description_from_soup(soup: BeautifulSoup, job_url: str) -> str | None:
     return None
 
 
-def _salary_from_soup(soup: BeautifulSoup, raw_html: str) -> tuple[float | None, float | None]:
+def _salary_from_soup(
+    soup: BeautifulSoup, raw_html: str, strict: bool = False
+) -> tuple[float | None, float | None]:
     """
     Extract a GBP salary from a fetched page. Tries in order:
       1. JSON-LD <script type="application/ld+json"> baseSalary (JobPosting schema)
       2. Embedded <script> JSON blobs with "currency":"GBP" + min/max (Apollo/GraphQL)
       3. <meta name="description"> / og:description / twitter:description text
-      4. Full body text
+      4. Full body text  (skipped when strict=True)
+
+    strict=True is used for external apply/redirect pages (e.g. job aggregators)
+    where the body may contain salary figures from unrelated job listings.
 
     Call this BEFORE _description_from_soup, which strips script tags from the soup.
     """
@@ -590,10 +595,11 @@ def _salary_from_soup(soup: BeautifulSoup, raw_html: str) -> tuple[float | None,
                 if lo or hi:
                     return lo, hi
 
-    # 4. Body text
-    body = soup.find("body")
-    if body:
-        return _salary_from_description(body.get_text(separator=" ", strip=True))
+    # 4. Body text — skipped in strict mode (apply pages may be aggregators)
+    if not strict:
+        body = soup.find("body")
+        if body:
+            return _salary_from_description(body.get_text(separator=" ", strip=True))
     return None, None
 
 
@@ -668,9 +674,9 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
     """
     import threading
 
-    needs_desc = {j for j in jobs if len(j.description or "") < _ENRICH_THRESHOLD}
-    needs_salary = {j for j in jobs if j.salary_min is None and j.salary_max is None}
-    to_fetch = needs_desc | needs_salary
+    needs_desc_ids = {j.id for j in jobs if len(j.description or "") < _ENRICH_THRESHOLD}
+    needs_salary_ids = {j.id for j in jobs if j.salary_min is None and j.salary_max is None}
+    to_fetch = [j for j in jobs if j.id in needs_desc_ids or j.id in needs_salary_ids]
 
     if not to_fetch:
         logger.info("enrich: all jobs already have sufficient descriptions and salary data.")
@@ -678,7 +684,7 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
 
     logger.info(
         "enrich: fetching %d job page(s) (%d need description, %d need salary)…",
-        len(to_fetch), len(needs_desc), len(needs_salary),
+        len(to_fetch), len(needs_desc_ids), len(needs_salary_ids),
     )
 
     # Per-domain throttling shared across both fetch passes
@@ -722,7 +728,7 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
             soup, raw = result
 
             # Salary before description — _description_from_soup may strip script tags
-            if job in needs_salary:
+            if job.id in needs_salary_ids:
                 lo, hi = _salary_from_soup(soup, raw)
                 if lo or hi:
                     job.salary_min, job.salary_max = lo, hi
@@ -730,7 +736,7 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
                 else:
                     needs_apply_fetch.append((job, soup, raw))
 
-            if job in needs_desc:
+            if job.id in needs_desc_ids:
                 text = _description_from_soup(soup, job.url)
                 if text and len(text) > len(job.description or ""):
                     job.description = text
@@ -764,7 +770,7 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
                 if result is None:
                     continue
                 soup, raw = result
-                lo, hi = _salary_from_soup(soup, raw)
+                lo, hi = _salary_from_soup(soup, raw, strict=True)
                 if lo or hi:
                     job.salary_min, job.salary_max = lo, hi
                     salary_enriched += 1
