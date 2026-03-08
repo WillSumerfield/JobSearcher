@@ -424,7 +424,6 @@ def _fetch_fun_block() -> str:
             )
         listdle_div += (
             '<p style="margin:10px 0 0;font-size:12.5px;color:#3D6B52;line-height:1.5;">'
-            "Don&#39;t forget to show me what score you get, cutie :3"
             "</p>"
             "</div>"
         )
