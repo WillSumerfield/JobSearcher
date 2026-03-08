@@ -197,6 +197,31 @@ class Database:
         ).fetchone()
         return row["digest_date"] if row else None
 
+    def get_all_digest_jobs(self, digest_date: Optional[str] = None) -> list["ScoredJob"]:
+        """
+        Return the full ranked list for a digest date as ScoredJob objects.
+        If digest_date is None, uses the most recent date in the DB.
+        Returns [] if no digest exists for that date.
+        """
+        from scorer import ScoredJob  # local import — avoids circular at module level
+        if digest_date is None:
+            row = self._conn.execute(
+                "SELECT digest_date FROM digest_jobs ORDER BY digest_date DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return []
+            digest_date = row["digest_date"]
+
+        rows = self._conn.execute(
+            "SELECT job_json, score, reason FROM digest_jobs "
+            "WHERE digest_date = ? ORDER BY idx ASC",
+            (digest_date,),
+        ).fetchall()
+        return [
+            ScoredJob(job=job_from_dict(json.loads(r["job_json"])), score=r["score"], reason=r["reason"])
+            for r in rows
+        ]
+
     def get_week_top_jobs(self, n: int = 15) -> list[dict]:
         """
         Return the top n jobs (by score desc) across the last 7 digest dates,

@@ -2,9 +2,10 @@
 main.py — JobSearcher entry point
 
 Usage:
-    python main.py --scrape [--limit N]   # Scrape, score, send digest email
-    python main.py --daemon               # Start IMAP IDLE reply daemon
-    python main.py --reset-db             # Delete jobs.db and start fresh
+    python main.py --scrape [--limit N] [--no-email]  # Scrape, score, save to DB (optionally skip email)
+    python main.py --send-digest                       # Send today's pre-compiled digest from DB
+    python main.py --daemon                            # Start IMAP IDLE reply daemon
+    python main.py --reset-db                          # Delete jobs.db and start fresh
 """
 
 import argparse
@@ -63,8 +64,8 @@ def _salary_display(job) -> str:
     return job.salary_display()
 
 
-def cmd_scrape(limit: int | None) -> None:
-    """Scrape boards, dedup, score, print results, and send the digest email."""
+def cmd_scrape(limit: int | None, no_email: bool = False) -> None:
+    """Scrape boards, dedup, score, save to DB, and (optionally) send the digest email."""
     from scraper.boards import scrape_boards, enrich_descriptions
     from scraper.companies import scrape_all_companies
     from db import Database
@@ -135,7 +136,7 @@ def cmd_scrape(limit: int | None) -> None:
         held_over  = [sj for sj in scored[send_top_n:] if sj.score > 0]
 
         db.mark_seen_bulk(sent_jobs + junk_jobs)
-        db.save_digest(today, scored)
+        db.save_digest(today, scored[:send_top_n])
         weekly_jobs = db.get_week_top_jobs(15) if date.today().weekday() == 4 else []
 
         if held_over:
@@ -145,14 +146,17 @@ def cmd_scrape(limit: int | None) -> None:
             )
 
     # Send email digest
-    try:
-        console.print("[dim]Sending digest email…[/]")
-        send_digest(cfg, scored, weekly_jobs=weekly_jobs or None)
-        console.print("[bold green]Digest email sent.[/]")
-    except KeyError as exc:
-        console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[yellow]Email not sent:[/] {exc}")
+    if no_email:
+        console.print("[dim]--no-email: digest saved to DB; skipping email send.[/]")
+    else:
+        try:
+            console.print("[dim]Sending digest email…[/]")
+            send_digest(cfg, scored, weekly_jobs=weekly_jobs or None)
+            console.print("[bold green]Digest email sent.[/]")
+        except KeyError as exc:
+            console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Email not sent:[/] {exc}")
 
     # Print to terminal
     seen_note = f"  [dim]({already_seen} already seen this week, hidden)[/]" if already_seen else ""
@@ -209,6 +213,37 @@ def cmd_reset_db() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Send-digest command
+# ---------------------------------------------------------------------------
+
+def cmd_send_digest() -> None:
+    """Send today's pre-compiled digest from the DB without re-scraping."""
+    from db import Database
+    from email_handler import send_digest
+
+    cfg = _load_config()
+    today = date.today().strftime("%Y-%m-%d")
+
+    with Database() as db:
+        scored = db.get_all_digest_jobs(today)
+        if not scored:
+            console.print(
+                f"[bold red]send-digest:[/] no digest found for {today} — run [bold]--scrape[/] first."
+            )
+            return
+        weekly_jobs = db.get_week_top_jobs(15) if date.today().weekday() == 4 else []
+
+    console.print(f"[dim]send-digest: sending {len(scored)} job(s) from saved digest ({today})…[/]")
+    try:
+        send_digest(cfg, scored, weekly_jobs=weekly_jobs or None)
+        console.print("[bold green]Digest email sent.[/]")
+    except KeyError as exc:
+        console.print(f"[yellow]Email not sent:[/] missing credential {exc} in config/.env")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]Email not sent:[/] {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Daemon command
 # ---------------------------------------------------------------------------
 
@@ -229,13 +264,21 @@ def cmd_daemon() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _configure_logging(verbose: bool) -> None:
+def _configure_logging(verbose: bool, log_file: Path | None = None) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(levelname)s  %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    if log_file is not None:
+        from logging.handlers import RotatingFileHandler
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=3,
+                                 encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)s  %(name)s: %(message)s"))
+        logging.getLogger().addHandler(fh)
     # Silence noisy third-party loggers unless --verbose
     if not verbose:
         for noisy in ("JobSpy", "imapclient", "imapclient.imaplib", "httpx",
@@ -250,6 +293,8 @@ def main() -> None:
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--scrape", action="store_true", help="Run the board scraper")
+    group.add_argument("--send-digest", action="store_true",
+                       help="Send today's pre-compiled digest from the database (no scraping)")
     group.add_argument("--daemon", action="store_true", help="Start the IMAP IDLE daemon")
     group.add_argument("--reset-db", action="store_true", help="Delete jobs.db and start fresh")
     parser.add_argument(
@@ -257,12 +302,17 @@ def main() -> None:
         help="Cap results at N (useful for quick testing)",
     )
     parser.add_argument(
+        "--no-email", action="store_true",
+        help="Scrape + score + save to DB but skip sending the digest email.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Show debug logs (scraper progress, filter decisions)",
     )
 
     args = parser.parse_args()
-    _configure_logging(args.verbose)
+    log_file = Path("logs/daemon.log") if args.daemon else None
+    _configure_logging(args.verbose, log_file=log_file)
 
     if args.reset_db:
         cmd_reset_db()
@@ -272,7 +322,9 @@ def main() -> None:
         sys.exit(1)
 
     if args.scrape:
-        cmd_scrape(limit=args.limit)
+        cmd_scrape(limit=args.limit, no_email=args.no_email)
+    elif args.send_digest:
+        cmd_send_digest()
     elif args.daemon:
         cmd_daemon()
     elif args.reset_db:

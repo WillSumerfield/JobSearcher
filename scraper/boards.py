@@ -421,6 +421,13 @@ _STRIP_TAGS = {"script", "style", "nav", "header", "footer", "aside", "noscript"
 # Description length below which we bother fetching the full page
 _ENRICH_THRESHOLD = 500
 
+# Minimum seconds between successive requests to a given domain during enrich.
+# LinkedIn is aggressive about rate-limiting anonymous fetches.
+_DOMAIN_DELAYS: dict[str, float] = {
+    "linkedin.com": 3.0,  # ~20 req/min max
+}
+_DEFAULT_DOMAIN_DELAY = 0.5
+
 
 def _fetch_full_description(job: Job) -> str | None:
     """
@@ -429,20 +436,34 @@ def _fetch_full_description(job: Job) -> str | None:
     Tries board-specific CSS selectors first, then falls back to stripping
     all navigational chrome and returning the remaining body text.
     """
-    try:
-        resp = requests.get(
-            job.url,
-            timeout=12,
-            headers={"User-Agent": _ENRICH_UA},
-            allow_redirects=True,
-        )
-        if resp.status_code in (403, 429):
-            logger.warning("enrich: %s blocked (%d) for %s", job.url, resp.status_code, job.source)
+    _MAX_RETRIES = 2
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                job.url,
+                timeout=12,
+                headers={"User-Agent": _ENRICH_UA},
+                allow_redirects=True,
+            )
+            if resp.status_code == 429:
+                if attempt < _MAX_RETRIES:
+                    wait = 5 * (2 ** attempt)  # 5s, then 10s
+                    logger.warning(
+                        "enrich: %s rate-limited (429), retrying in %ds… (attempt %d/%d)",
+                        job.url, wait, attempt + 1, _MAX_RETRIES,
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.warning("enrich: %s blocked (429) after %d retries", job.url, _MAX_RETRIES)
+                return None
+            if resp.status_code == 403:
+                logger.warning("enrich: %s blocked (403) for %s", job.url, job.source)
+                return None
+            resp.raise_for_status()
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("enrich: failed to fetch %s — %s", job.url, exc)
             return None
-        resp.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("enrich: failed to fetch %s — %s", job.url, exc)
-        return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -508,8 +529,12 @@ def enrich_descriptions(jobs: list[Job], concurrency: int = 8) -> None:
         with domain_lock:
             now = time.monotonic()
             gap = now - domain_last_hit.get(host, 0)
-            if gap < 0.5:
-                time.sleep(0.5 - gap)
+            delay = next(
+                (v for k, v in _DOMAIN_DELAYS.items() if k in host),
+                _DEFAULT_DOMAIN_DELAY,
+            )
+            if gap < delay:
+                time.sleep(delay - gap)
             domain_last_hit[host] = time.monotonic()
         return job, _fetch_full_description(job)
 
