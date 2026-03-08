@@ -1,0 +1,43 @@
+profile:
+  name: "Firstname Lastname"              # Your full name
+  email: "myemail@gmail.com"  # Your personal email (should match GMAIL_RECIPIENT_ADDRESS in .env)
+
+search:
+  keywords:
+    - "Senior Data Scientist"
+    - "Data Scientist"
+    - "Big Data Engineer"
+
+  location: "City, Country"
+  remote_ok: true
+  hybrid_ok: true
+  salary_min_gbp: 50000    # Drop roles where salary is known and below this
+  contract_ok: true        # Also search for contract / day-rate roles
+  results_per_board: 30    # Max results per keyword per board per location
+
+skills:
+  - PySpark
+  - Python (pandas, scikit-learn, numpy)
+  - Data wrangling / ETL pipelines
+
+education:
+  - "BSc Data Science"
+
+experience_summary:
+  5 years as a data scientist as company, working with ... and ... (more info is better here)
+
+target_companies:           # Career pages scraped directly each run
+  # ── Greenhouse ATS (public API) ──────────────────────────────────────────
+  - name: "Monzo"
+    careers_url: "https://monzo.com/careers/"
+    ats: greenhouse
+    ats_token: monzo
+
+# Job titles to exclude — case-insensitive substring match against the job title
+exclude_titles:
+  - "Machine Learning Engineer"
+  - "ML Engineer"
+  - "Financial Modeller"
+
+digest_email:
+  send_top_n: 15
